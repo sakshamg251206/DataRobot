@@ -5,3 +5,11 @@ scikit-learn
 matplotlib
 seaborn
 plotly
+langchain
+langchain-experimental
+langchain-google-genai
+tabulate
+xgboost
+shap
+statsmodels
+fpdf2
