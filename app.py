@@ -10,6 +10,7 @@ from src.time_series import run_time_series_analysis
 from src.report_generator import render_report_section
 from src.ai_assistant import render_ai_assistant
 from src.smart_mode import smart_auto_pipeline
+from src.advanced_analysis import render_advanced_analysis
 import os
 
 st.set_page_config(page_title="Auto Data Science Max", layout="wide", page_icon="📊")
@@ -41,10 +42,11 @@ def main():
         "4. Advanced Cleaning (Manual)",
         "5. Feature Tracking (Manual)",
         "6. Visualization",
-        "7. Time Series Analysis",
-        "8. Machine Learning / Explainable AI",
-        "9. AI Assistant Chat 🤖",
-        "10. Report Generator"
+        "7. 📊 Advanced Analysis",
+        "8. Time Series Analysis",
+        "9. Machine Learning",
+        "10. AI Assistant Chat 🤖",
+        "11. 📄 Report Generator"
     ])
     
     # 1. Upload
@@ -91,12 +93,11 @@ def main():
                 with st.spinner("Processing Dataset AI Logistics..."):
                     df_out, logs, i_score, f_score = smart_auto_pipeline(st.session_state.raw_data, target_col)
                     
-                    st.session_state.encoded_data = df_out # Safely route downstream
-                    st.session_state.cleaned_data = df_out # Safely route visualization downstream
+                    st.session_state.encoded_data = df_out 
+                    st.session_state.cleaned_data = df_out 
                     
                     st.success(f"Processing Complete! Data Readiness Score improved from {i_score:.1f}% to {f_score:.1f}%")
                     
-                    # Display Logs
                     with st.expander("View AI Logistics Tracking Protocol Logs", expanded=True):
                         for text in logs:
                             st.write(text)
@@ -173,9 +174,17 @@ def main():
                 plot_pairplot(data_to_plot)
         else:
             st.warning("Please upload a dataset first.")
+            
+    # 7. Advanced Analysis
+    elif app_mode == "7. 📊 Advanced Analysis":
+        data_to_plot = st.session_state.cleaned_data if st.session_state.cleaned_data is not None else st.session_state.raw_data
+        if data_to_plot is not None:
+            render_advanced_analysis(data_to_plot)
+        else:
+            st.warning("Please upload a dataset first.")
 
-    # 7. Time Series
-    elif app_mode == "7. Time Series Analysis":
+    # 8. Time Series
+    elif app_mode == "8. Time Series Analysis":
         st.header("Time Series Analysis")
         data_to_ts = st.session_state.cleaned_data if st.session_state.cleaned_data is not None else st.session_state.raw_data
         if data_to_ts is not None:
@@ -183,8 +192,8 @@ def main():
         else:
             st.warning("Please upload a dataset first.")
 
-    # 8. Machine Learning / Explainable AI
-    elif app_mode == "8. Machine Learning / Explainable AI":
+    # 9. Machine Learning
+    elif app_mode == "9. Machine Learning":
         st.header("Machine Learning & Explanations")
         if st.session_state.encoded_data is not None:
             prepare_modeling(st.session_state.encoded_data)
@@ -194,13 +203,13 @@ def main():
         else:
             st.warning("Please upload a dataset first.")
 
-    # 9. AI Assistant
-    elif app_mode == "9. AI Assistant Chat 🤖":
+    # 10. AI Assistant
+    elif app_mode == "10. AI Assistant Chat 🤖":
         data_to_chat = st.session_state.cleaned_data if st.session_state.cleaned_data is not None else st.session_state.raw_data
         render_ai_assistant(data_to_chat)
         
-    # 10. PDF Report
-    elif app_mode == "10. Report Generator":
+    # 11. PDF Report
+    elif app_mode == "11. 📄 Report Generator":
         render_report_section()
 
 if __name__ == "__main__":
