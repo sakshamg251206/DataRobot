@@ -440,7 +440,6 @@ def smart_auto_pipeline(
     )
 
     # Save test set to session state for modeling.py to use
-    import streamlit as st
     st.session_state["test_data"] = test_df
 
     return train_df, logs, init_score, final_score
