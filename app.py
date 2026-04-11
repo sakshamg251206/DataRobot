@@ -277,16 +277,19 @@ def main():
 
         if st.button("Apply Feature Engineering", type="primary"):
             with st.spinner("Engineering features..."):
-                df_engineered = auto_feature_engineering(data_to_use, poly=add_poly, ratios=add_ratios)
-                df_encoded    = encode_categorical(df_engineered, strategy=encoding_strategy)
-                df_scaled     = scale_numerical(df_encoded, strategy=scaling_strategy)
+                logs                 = []
+                df_engineered        = auto_feature_engineering(data_to_use, poly=add_poly, ratios=add_ratios, logs=logs)
+                df_encoded, encoders = encode_categorical(df_engineered, strategy=encoding_strategy, logs=logs)
+                df_scaled, scaler    = scale_numerical(df_encoded, strategy=scaling_strategy, logs=logs)
             st.session_state.encoded_data = df_scaled
+            st.session_state["encoders"]  = encoders
+            st.session_state["scaler"]    = scaler
             st.success("Feature engineering complete.")
-
+ 
         if st.session_state.encoded_data is not None:
             st.write("### Transformed dataset")
             st.dataframe(st.session_state.encoded_data.head(), use_container_width=True)
-
+ 
             csv = st.session_state.encoded_data.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "📥 Download engineered data (.csv)",
