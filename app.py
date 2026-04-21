@@ -47,6 +47,14 @@ def init_session():
         "model_results": None,
         "ts_results":    None,
         "report_data":   {},
+        "test_data":     None,
+        "best_model":    None,
+        "best_model_name": None,
+        "feature_cols":  None,
+        "task_type":     None,
+        "encoders":      None,
+        "scaler":        None,
+        "chat_messages": [],
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -58,11 +66,16 @@ def reset_pipeline():
     keys_to_clear = [
         "raw_data", "cleaned_data", "encoded_data",
         "pipeline_logs", "model_results", "ts_results", "report_data",
+        "test_data", "best_model", "best_model_name",
+        "feature_cols", "task_type", "encoders", "scaler", "chat_messages",
     ]
     for k in keys_to_clear:
-        st.session_state[k] = None if k != "pipeline_logs" else []
-    if "report_data" in st.session_state:
-        st.session_state["report_data"] = {}
+        if k in ("pipeline_logs", "chat_messages"):
+            st.session_state[k] = []
+        elif k in ("report_data",):
+            st.session_state[k] = {}
+        else:
+            st.session_state[k] = None
 
 
 # ── Sidebar status indicator ───────────────────────────────────────────────────
@@ -85,7 +98,8 @@ def validate_and_set_api_key(key: str) -> bool:
     """Returns True if key looks valid and sets env var."""
     if not key:
         return False
-    if not key.startswith("AIza") or len(key) < 30:
+
+    if len(key) < 20:   
         st.sidebar.error("⚠️ Invalid Gemini API key format. Keys start with 'AIza'.")
         return False
     os.environ["GOOGLE_API_KEY"] = key
@@ -125,8 +139,10 @@ def main():
     # ── 1. Upload ──────────────────────────────────────────────────────────────
     if section == "upload":
         st.header("Upload your CSV dataset")
-        uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
-
+        uploaded_file = st.file_uploader(
+            "Choose a CSV or Excel file", type=["csv", "xlsx", "xls"] 
+        )
+        
         if uploaded_file is not None:
             df = load_data(uploaded_file)
             if df is not None:
@@ -134,6 +150,7 @@ def main():
                 st.session_state.cleaned_data = None
                 st.session_state.encoded_data = None
                 st.session_state.model_results = None
+                st.session_state.test_data     = None
 
         if st.session_state.raw_data is not None:
             df = st.session_state.raw_data
@@ -201,6 +218,14 @@ def main():
             st.dataframe(df_out.head(), use_container_width=True)
             st.write(f"Shape: **{df_out.shape[0]:,} rows × {df_out.shape[1]} columns**")
 
+            
+            if st.session_state.get("test_data") is not None:
+                test_df = st.session_state["test_data"]
+                st.info(
+                    f"🧪 Held-out test set: **{test_df.shape[0]:,} rows × {test_df.shape[1]} columns** "
+                    "— saved for evaluation in the ML section."
+                )
+            
             csv = df_out.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "📥 Download processed data",
@@ -234,6 +259,9 @@ def main():
                     outlier_action=outlier_action
                 )
             st.session_state.cleaned_data = cleaned
+            # FIX: Reset downstream state when data changes
+            st.session_state.encoded_data  = None
+            st.session_state.model_results = None
             st.success("Cleaning complete.")
 
         if st.session_state.cleaned_data is not None:
@@ -262,6 +290,10 @@ def main():
         if data_to_use is None:
             st.warning("Please upload (and optionally clean) a dataset first.")
             st.stop()
+        
+# FIX: Show which data source is being used
+        source = "cleaned" if st.session_state.cleaned_data is not None else "raw"
+        st.info(f"ℹ️ Using **{source}** data. Run cleaning first for best results.")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -284,12 +316,23 @@ def main():
             st.session_state.encoded_data = df_scaled
             st.session_state["encoders"]  = encoders
             st.session_state["scaler"]    = scaler
+            st.session_state.model_results = None 
             st.success("Feature engineering complete.")
  
+
+        if logs:
+            with st.expander("📋 View feature engineering log", expanded=False):
+                for i, entry in enumerate(logs, 1):
+                    st.write(f"**{i}.** {entry}")
+        
         if st.session_state.encoded_data is not None:
             st.write("### Transformed dataset")
             st.dataframe(st.session_state.encoded_data.head(), use_container_width=True)
- 
+ st.write(
+                f"Shape: **{st.session_state.encoded_data.shape[0]:,} rows × "
+                f"{st.session_state.encoded_data.shape[1]} columns**"
+            )
+            
             csv = st.session_state.encoded_data.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "📥 Download engineered data (.csv)",
@@ -375,7 +418,13 @@ def main():
             if st.session_state.cleaned_data is not None
             else st.session_state.raw_data
         )
-        render_ai_assistant(data_to_chat)
+
+
+        if data_to_chat is None:
+            st.warning("Please upload a dataset first before using the AI Assistant.")
+            st.stop()
+    
+        render_ai_assistant(data_tochat)
 
     # ── 11. Report Generator ───────────────────────────────────────────────────
     elif section == "report":
