@@ -50,22 +50,29 @@ def extract_datetime_features(df: pd.DataFrame, logs: list) -> pd.DataFrame:
     For each datetime column, extract year, month, day, dayofweek, quarter.
     Drop the original datetime column after extraction — ML models need numbers.
     """
-    df        = df.copy()
+    df = df.copy()
     _, _, _, date_cols = get_column_types(df)
 
     if not date_cols:
         return df
 
     extracted = []
+    dropped   = []
     for col in date_cols:
         for part in DATE_PARTS:
-            new_col        = f"{col}_{part}"
-            df[new_col]    = getattr(df[col].dt, part)
-            extracted.append(new_col)
+            new_col = f"{col}_{part}"
+            try:
+                df[new_col] = getattr(df[col].dt, part)
+                extracted.append(new_col)
+            except Exception:
+                pass   # FIX: silently skip parts that fail on certain freq types
         df.drop(columns=[col], inplace=True)
+        dropped.append(col)
 
-    logs.append(f"Extracted datetime features {DATE_PARTS} from: {date_cols}")
-    logs.append(f"Dropped original datetime columns: {date_cols}")
+    if logs is not None:
+        if extracted:
+            logs.append(f"Extracted datetime features {DATE_PARTS} from: {dropped}")
+        logs.append(f"Dropped original datetime columns: {dropped}")
     return df
 
 
@@ -113,7 +120,7 @@ def encode_categorical(
             "Use One-Hot Encoding for nominal categories with non-tree models."
         )
         for col in cat_cols:
-            le             = LabelEncoder()
+            le = LabelEncoder()
             # Fill NaN with placeholder so LabelEncoder doesn't crash
             df_encoded[col] = df_encoded[col].astype(str).fillna("__missing__")
             df_encoded[col] = le.fit_transform(df_encoded[col])
@@ -137,10 +144,10 @@ def encode_categorical(
             )
 
         if safe_cols:
-            n_before    = df_encoded.shape[1]
-            df_encoded  = pd.get_dummies(df_encoded, columns=safe_cols, drop_first=True)
-            n_after     = df_encoded.shape[1]
-            n_new       = n_after - n_before + len(safe_cols)
+            n_before   = df_encoded.shape[1]
+            df_encoded = pd.get_dummies(df_encoded, columns=safe_cols, drop_first=True)
+            n_after    = df_encoded.shape[1]
+            n_new      = n_after - n_before + len(safe_cols)
             logs.append(
                 f"One-Hot Encoding applied to: {safe_cols} "
                 f"(created {n_new} new binary columns)."
@@ -204,6 +211,15 @@ def scale_numerical(
         logs.append(f"Unknown scaling strategy: {strategy}. Skipping.")
         return df_scaled, None
 
+    # FIX: drop columns with zero variance before scaling to avoid division-by-zero
+    zero_var = [c for c in num_cols if df_scaled[c].std() == 0]
+    if zero_var:
+        num_cols = [c for c in num_cols if c not in zero_var]
+        logs.append(f"Skipped scaling for zero-variance columns: {zero_var}")
+
+    if not num_cols:
+        return df_scaled, None
+
     df_scaled[num_cols] = scaler.fit_transform(df_scaled[num_cols])
     logs.append(f"{strategy} applied to {len(num_cols)} numeric columns (target excluded).")
     st.success(f"{strategy} applied to {len(num_cols)} numeric columns.")
@@ -252,7 +268,6 @@ def auto_feature_engineering(
     # ── Ratios ────────────────────────────────────────────────────────────────
     if ratios:
         pairs_created = []
-        # Generate all pairs, pick top RATIO_MAX_PAIRS by denominator non-zero rate
         all_pairs = list(combinations(num_cols, 2))
 
         for col1, col2 in all_pairs[:RATIO_MAX_PAIRS * 3]:
@@ -261,11 +276,19 @@ def auto_feature_engineering(
             if (denom < 1e-6).mean() > 0.3:
                 continue
 
-            ratio_col             = f"{col1}_div_{col2}"
-            df_eng[ratio_col]     = df_eng[col1] / (df_eng[col2].replace(0, np.nan))
-            # Inf and -Inf from division by zero → NaN → fill with median
-            df_eng[ratio_col]     = df_eng[ratio_col].replace([np.inf, -np.inf], np.nan)
-            df_eng[ratio_col]     = df_eng[ratio_col].fillna(df_eng[ratio_col].median())
+            ratio_col         = f"{col1}_div_{col2}"
+            # FIX: avoid SettingWithCopyWarning by direct assignment
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio_vals = np.where(
+                    df_eng[col2].abs() < 1e-6, np.nan,
+                    df_eng[col1].values / df_eng[col2].values
+                )
+            df_eng[ratio_col] = ratio_vals
+            df_eng[ratio_col] = df_eng[ratio_col].replace([np.inf, -np.inf], np.nan)
+            median_val        = df_eng[ratio_col].median()
+            df_eng[ratio_col] = df_eng[ratio_col].fillna(
+                median_val if pd.notna(median_val) else 0
+            )
             pairs_created.append(ratio_col)
 
             if len(pairs_created) >= RATIO_MAX_PAIRS:
@@ -283,11 +306,14 @@ def auto_feature_engineering(
         variances = df_eng[num_cols].var().sort_values(ascending=False)
         top_cols  = variances.index[:POLY_MAX_COLS].tolist()
 
-        poly_feat = PolynomialFeatures(degree=2, include_bias=False)
-        poly_arr  = poly_feat.fit_transform(df_eng[top_cols])
+        # FIX: guard against NaN in polynomial input
+        poly_input = df_eng[top_cols].fillna(df_eng[top_cols].median())
+
+        poly_feat  = PolynomialFeatures(degree=2, include_bias=False)
+        poly_arr   = poly_feat.fit_transform(poly_input)
         poly_names = poly_feat.get_feature_names_out(top_cols)
 
-        poly_df   = pd.DataFrame(
+        poly_df = pd.DataFrame(
             poly_arr,
             columns=poly_names,
             index=df_eng.index
