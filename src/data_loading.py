@@ -20,7 +20,12 @@ def _read_csv(file) -> pd.DataFrame:
 
 
 def _read_excel(file) -> pd.DataFrame:
-    return pd.read_excel(file, engine="openpyxl")
+    # FIX: added try/except for openpyxl vs xlrd engine selection
+    try:
+        return pd.read_excel(file, engine="openpyxl")
+    except Exception:
+        file.seek(0)
+        return pd.read_excel(file)
 
 
 def _validate(df: pd.DataFrame) -> list[str]:
@@ -102,12 +107,24 @@ def _clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = (
         df.columns
+        .astype(str)
         .str.strip()
         .str.lower()
         .str.replace(r"[^\w]", "_", regex=True)
         .str.replace(r"_+", "_", regex=True)
         .str.strip("_")
     )
+
+    seen = {}
+    new_cols = []
+    for col in df.columns:
+        if col in seen:
+            seen[col] += 1
+            new_cols.append(f"{col}_{seen[col]}")
+        else:
+            seen[col] = 0
+            new_cols.append(col)
+    df.columns = new_cols
     return df
 
 
@@ -120,7 +137,8 @@ def _drop_unnamed_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
+
+
 def load_data(file) -> pd.DataFrame | None:
     """
     Load a CSV or Excel file into a DataFrame.
@@ -137,6 +155,8 @@ def load_data(file) -> pd.DataFrame | None:
     if file is None:
         return None
 
+    
+    name = file.name
     ext = "." + file.name.rsplit(".", 1)[-1].lower()
 
     if ext not in SUPPORTED_EXTENSIONS:
