@@ -40,14 +40,18 @@ def auto_insight_generator(df: pd.DataFrame, context: str, extra: str = ""):
     if not LANGCHAIN_AVAILABLE:
         return
 
-    if st.button(f"🤖 Generate AI insight — {context}", key=f"insight_{context}_{extra}"):
+    # FIX: unique key per call to avoid duplicate widget ID errors on rerun
+    button_key = f"insight_{context}_{extra}_{hash(str(df.shape))}"
+
+    if st.button(f"🤖 Generate AI insight — {context}", key=button_key):
         with st.spinner("Generating insight..."):
             try:
                 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.4)
 
                 if context == "Histogram":
-                    col_stats = df[extra].describe().round(3).to_string()
-                    skew      = round(float(df[extra].skew()), 3)
+                    valid     = df[extra].dropna()
+                    col_stats = valid.describe().round(3).to_string()
+                    skew      = round(float(valid.skew()), 3) if not valid.empty else 0
                     prompt = (
                         f"You are a data scientist. I have a numeric column '{extra}' with these stats:\n"
                         f"{col_stats}\nSkewness: {skew}\n\n"
@@ -56,11 +60,15 @@ def auto_insight_generator(df: pd.DataFrame, context: str, extra: str = ""):
                     )
 
                 elif context == "Correlation":
-                    num_df  = df.select_dtypes(include="number")
-                    corr_str = num_df.corr().round(2).to_string()
+                    num_df   = df.select_dtypes(include="number")
+                    # FIX: truncate corr matrix for very wide datasets
+                    corr_df  = num_df.corr().round(2)
+                    if corr_df.shape[0] > 10:
+                        corr_df = corr_df.iloc[:10, :10]
+                    corr_str = corr_df.to_string()
                     prompt = (
-                        f"You are a data scientist. Dataset columns: {list(df.columns)}.\n"
-                        f"Pearson correlation matrix:\n{corr_str}\n\n"
+                        f"You are a data scientist. Dataset columns: {list(df.columns[:20])}.\n"
+                        f"Pearson correlation matrix (first 10 cols):\n{corr_str}\n\n"
                         "Identify the top 2-3 most meaningful correlations and explain "
                         "what they imply in plain business terms. Be concise."
                     )
@@ -125,8 +133,13 @@ def plot_histogram(df: pd.DataFrame):
 
     # Distribution stats
     s    = df[col_to_plot].dropna()
-    skew = s.skew()
-    kurt = s.kurt()
+    # FIX: guard empty or constant column
+    if s.empty:
+        st.info("No data to display for this column.")
+        return
+
+    skew = s.skew()   if len(s) > 2 else 0.0
+    kurt = s.kurt()   if len(s) > 3 else 0.0
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Mean",     f"{s.mean():.3f}")
@@ -158,7 +171,7 @@ def plot_correlation_heatmap(df: pd.DataFrame):
     # Let user filter columns if there are many
     if len(num_cols) > 10:
         selected = st.multiselect(
-            "Select columns to include (default: all)",
+            "Select columns to include (default: first 10)",
             options=num_cols,
             default=num_cols[:10],
             key="heatmap_cols",
@@ -187,12 +200,19 @@ def plot_correlation_heatmap(df: pd.DataFrame):
     # Highlight strongest correlations
     st.subheader("Strongest correlations")
     pairs = []
-    for i in range(len(corr_matrix.columns)):
-        for j in range(i + 1, len(corr_matrix.columns)):
-            c1 = corr_matrix.columns[i]
-            c2 = corr_matrix.columns[j]
+    cols  = corr_matrix.columns.tolist()
+    for i in range(len(cols)):
+        for j in range(i + 1, len(cols)):
+            c1 = cols[i]
+            c2 = cols[j]
             r  = corr_matrix.loc[c1, c2]
-            pairs.append({"Feature A": c1, "Feature B": c2, "Correlation": round(r, 4)})
+            # FIX: skip NaN correlations (e.g. constant columns)
+            if pd.notna(r):
+                pairs.append({"Feature A": c1, "Feature B": c2, "Correlation": round(r, 4)})
+
+    if not pairs:
+        st.info("No valid correlation pairs found.")
+        return
 
     pairs_df = (
         pd.DataFrame(pairs)
@@ -228,12 +248,18 @@ def plot_pairplot(df: pd.DataFrame):
     col1, col2 = st.columns(2)
     with col1:
         # Default to top 5 by variance — most informative columns
-        default_cols = (
-            df[num_cols].var()
-            .sort_values(ascending=False)
-            .index[:5]
-            .tolist()
-        )
+        # FIX: guard empty variance (all-NaN columns)
+        try:
+            default_cols = (
+                df[num_cols].var()
+                .dropna()
+                .sort_values(ascending=False)
+                .index[:5]
+                .tolist()
+            )
+        except Exception:
+            default_cols = num_cols[:5]
+
         selected_cols = st.multiselect(
             "Columns to plot (max 6 recommended)",
             options=num_cols,
@@ -254,8 +280,14 @@ def plot_pairplot(df: pd.DataFrame):
 
     color_col = None if color_by == "None" else color_by
 
+    # FIX: sample large datasets for pairplot performance
+    plot_df = df
+    if len(df) > 5000:
+        plot_df = df.sample(5000, random_state=42)
+        st.caption(f"Sampled 5,000 / {len(df):,} rows for scatter matrix performance.")
+
     fig = px.scatter_matrix(
-        df,
+        plot_df,
         dimensions=selected_cols,
         color=color_col,
         title="Scatter matrix"
