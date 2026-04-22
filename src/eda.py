@@ -19,6 +19,10 @@ def _classify_column(series: pd.Series, total_rows: int) -> str:
         ID | Date | Binary | Low-card categorical | High-card categorical |
         Continuous numeric | Discrete numeric
     """
+    # FIX: guard against empty series
+    if series.dropna().empty:
+        return "Empty"
+
     unique_ratio = series.nunique(dropna=False) / max(total_rows, 1)
 
     if pd.api.types.is_datetime64_any_dtype(series):
@@ -27,15 +31,19 @@ def _classify_column(series: pd.Series, total_rows: int) -> str:
     # Try parsing as date if object
     if series.dtype == object:
         try:
-            pd.to_datetime(series.dropna().head(20), infer_datetime_format=True)
-            return "Date/Time (string)"
+            sample = series.dropna().head(20)
+            if not sample.empty:
+                parsed = pd.to_datetime(sample, infer_datetime_format=True, errors="coerce")
+                if parsed.notna().mean() > 0.7:
+                    return "Date/Time (string)"
         except Exception:
             pass
 
     if unique_ratio >= HIGH_CARDINALITY_THRESHOLD and series.dtype != object:
         return "ID / Index"
 
-    if series.dtype == object or pd.api.types.is_categorical_dtype(series):
+    # FIX: use pd.api.types instead of deprecated is_categorical_dtype
+    if series.dtype == object or isinstance(series.dtype, pd.CategoricalDtype):
         if series.nunique() <= LOW_CARDINALITY_THRESHOLD:
             return "Low-card categorical"
         elif unique_ratio >= HIGH_CARDINALITY_THRESHOLD:
@@ -87,12 +95,15 @@ def _missing_heatmap(df: pd.DataFrame) -> go.Figure:
 def _skew_chart(df: pd.DataFrame) -> go.Figure:
     """Bar chart of skewness for all numeric columns."""
     num_df = df.select_dtypes(include="number")
+    if num_df.empty:
+        return go.Figure()
+
     skew   = num_df.skew().sort_values(key=abs, ascending=False).reset_index()
     skew.columns = ["Column", "Skewness"]
 
-    colors = skew["Skewness"].apply(
-        lambda v: "#e24b4a" if abs(v) >= SKEW_THRESHOLD else "#1d9e75"
-    )
+    # FIX: build color list properly without apply on Series
+    colors = ["#e24b4a" if abs(v) >= SKEW_THRESHOLD else "#1d9e75"
+              for v in skew["Skewness"]]
 
     fig = px.bar(
         skew, x="Column", y="Skewness",
@@ -122,16 +133,16 @@ def show_data_info(df: pd.DataFrame):
     st.subheader("Dataset Overview")
 
     # Top metrics
-    n_dupes      = int(df.duplicated().sum())
-    n_missing    = int(df.isnull().sum().sum())
-    memory_mb    = df.memory_usage(deep=True).sum() / 1024 ** 2
+    n_dupes   = int(df.duplicated().sum())
+    n_missing = int(df.isnull().sum().sum())
+    memory_mb = df.memory_usage(deep=True).sum() / 1024 ** 2
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Rows",          f"{df.shape[0]:,}")
-    c2.metric("Columns",       df.shape[1])
-    c3.metric("Duplicate rows",f"{n_dupes:,}")
-    c4.metric("Missing cells", f"{n_missing:,}")
-    c5.metric("Memory",        f"{memory_mb:.1f} MB")
+    c1.metric("Rows",           f"{df.shape[0]:,}")
+    c2.metric("Columns",        df.shape[1])
+    c3.metric("Duplicate rows", f"{n_dupes:,}")
+    c4.metric("Missing cells",  f"{n_missing:,}")
+    c5.metric("Memory",         f"{memory_mb:.1f} MB")
 
     if n_dupes > 0:
         st.warning(f"⚠️ {n_dupes:,} duplicate rows found — these should be removed in cleaning.")
@@ -146,11 +157,16 @@ def show_data_info(df: pd.DataFrame):
 
     rows = []
     for col in df.columns:
-        s            = df[col]
-        col_type     = _classify_column(s, df.shape[0])
-        n_unique     = s.nunique(dropna=False)
-        missing_pct  = s.isnull().mean() * 100
-        sample_vals  = ", ".join(str(v) for v in s.dropna().unique()[:3])
+        s           = df[col]
+        col_type    = _classify_column(s, df.shape[0])
+        n_unique    = s.nunique(dropna=False)
+        missing_pct = s.isnull().mean() * 100
+
+        # FIX: safe sample values — avoid errors on mixed types
+        try:
+            sample_vals = ", ".join(str(v) for v in s.dropna().unique()[:3])
+        except Exception:
+            sample_vals = "N/A"
 
         skew_val = None
         if pd.api.types.is_numeric_dtype(s):
@@ -160,12 +176,12 @@ def show_data_info(df: pd.DataFrame):
                 pass
 
         rows.append({
-            "Column":      col,
-            "Dtype":       str(s.dtype),
-            "Kind":        col_type,
-            "Unique":      n_unique,
-            "Missing %":   round(missing_pct, 1),
-            "Skewness":    skew_val if skew_val is not None else "—",
+            "Column":        col,
+            "Dtype":         str(s.dtype),
+            "Kind":          col_type,
+            "Unique":        n_unique,
+            "Missing %":     round(missing_pct, 1),
+            "Skewness":      skew_val if skew_val is not None else "—",
             "Sample values": sample_vals,
         })
 
@@ -173,9 +189,9 @@ def show_data_info(df: pd.DataFrame):
     st.dataframe(profile_df, use_container_width=True, height=350)
 
     # ML-relevant flags
-    id_cols    = profile_df[profile_df["Kind"].str.contains("ID")]
-    date_cols  = profile_df[profile_df["Kind"].str.contains("Date")]
-    hcard_cols = profile_df[profile_df["Kind"].str.contains("High-card")]
+    id_cols    = profile_df[profile_df["Kind"].str.contains("ID",    na=False)]
+    date_cols  = profile_df[profile_df["Kind"].str.contains("Date",  na=False)]
+    hcard_cols = profile_df[profile_df["Kind"].str.contains("High-card", na=False)]
 
     flags = []
     if not id_cols.empty:
@@ -232,21 +248,24 @@ def show_missing_values(df: pd.DataFrame):
     """
     st.subheader("Missing Value Report")
 
-    missing_pct  = df.isnull().mean() * 100
-    missing_cnt  = df.isnull().sum()
-    missing_df   = pd.DataFrame({
-        "Column":    df.columns,
+    missing_pct = df.isnull().mean() * 100
+    missing_cnt = df.isnull().sum()
+
+    # FIX: build DataFrame without relying on positional index alignment
+    missing_df = pd.DataFrame({
+        "Column":    df.columns.tolist(),
         "Missing #": missing_cnt.values,
         "Missing %": missing_pct.round(2).values,
-        "Severity":  missing_pct.apply(
-            lambda p:
-            "🔴 Critical (>50%)"   if p > 50  else
-            "🟠 High (20–50%)"     if p > 20  else
-            "🟡 Moderate (5–20%)"  if p > 5   else
-            "🟢 Low (<5%)"         if p > 0   else
-            "✅ None"
-        ).values,
-    }).sort_values("Missing %", ascending=False)
+    })
+    missing_df["Severity"] = missing_df["Missing %"].apply(
+        lambda p:
+        "🔴 Critical (>50%)"   if p > 50  else
+        "🟠 High (20–50%)"     if p > 20  else
+        "🟡 Moderate (5–20%)"  if p > 5   else
+        "🟢 Low (<5%)"         if p > 0   else
+        "✅ None"
+    )
+    missing_df = missing_df.sort_values("Missing %", ascending=False)
 
     total_missing_pct = df.isnull().mean().mean() * 100
     cols_with_missing = (missing_pct > 0).sum()
@@ -288,16 +307,25 @@ def show_summary_statistics(df: pd.DataFrame):
             st.info("No numeric columns found.")
         else:
             desc = num_df.describe().T
-            desc["skewness"] = num_df.skew().round(3)
-            desc["kurtosis"] = num_df.kurt().round(3)
+            # FIX: guard against missing skew/kurt when col has constant values
+            try:
+                desc["skewness"] = num_df.skew().round(3)
+            except Exception:
+                desc["skewness"] = np.nan
+            try:
+                desc["kurtosis"] = num_df.kurt().round(3)
+            except Exception:
+                desc["kurtosis"] = np.nan
+
             desc = desc.rename(columns={
                 "count": "count", "mean": "mean", "std": "std dev",
                 "min": "min", "25%": "Q1", "50%": "median",
                 "75%": "Q3", "max": "max"
             })
-            st.dataframe(desc.style.background_gradient(
-                subset=["mean", "std dev"], cmap="Blues"
-            ), use_container_width=True)
+            # FIX: only apply gradient to columns that exist in this describe output
+            gradient_cols = [c for c in ["mean", "std dev"] if c in desc.columns]
+            styled = desc.style.background_gradient(subset=gradient_cols, cmap="Blues")
+            st.dataframe(styled, use_container_width=True)
 
             st.caption(
                 "Skewness > 1 or < -1 = consider log transform. "
@@ -311,9 +339,11 @@ def show_summary_statistics(df: pd.DataFrame):
             cat_rows = []
             for col in cat_df.columns:
                 s = cat_df[col]
-                top_val   = s.value_counts().idxmax() if not s.value_counts().empty else "—"
-                top_freq  = s.value_counts().max()    if not s.value_counts().empty else 0
-                top_pct   = round(top_freq / len(s) * 100, 1)
+                vc = s.value_counts()
+                top_val  = vc.idxmax() if not vc.empty else "—"
+                top_freq = int(vc.max())  if not vc.empty else 0
+                # FIX: guard div-by-zero when series is all NaN
+                top_pct  = round(top_freq / max(len(s), 1) * 100, 1)
                 cat_rows.append({
                     "Column":      col,
                     "Unique vals": s.nunique(),
