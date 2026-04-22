@@ -39,7 +39,6 @@ def compute_readiness_score(df: pd.DataFrame, target_col: str) -> float:
         - Penalise missing values       (up to -30)
         - Penalise duplicate rows       (up to -10)
         - Penalise non-numeric columns  (up to -30)
-          (ML models need all-numeric input)
         - Penalise zero-variance cols   (up to -15)
         - Penalise >50% missing cols    (up to -15)
     """
@@ -55,7 +54,11 @@ def compute_readiness_score(df: pd.DataFrame, target_col: str) -> float:
 
     # Non-numeric columns (excluding target)
     feature_cols = [c for c in df.columns if c != target_col]
-    non_numeric  = df[feature_cols].select_dtypes(exclude="number").shape[1]
+    # FIX: guard against empty feature list
+    if not feature_cols:
+        return round(max(0.0, min(100.0, score)), 1)
+
+    non_numeric   = df[feature_cols].select_dtypes(exclude="number").shape[1]
     non_num_ratio = non_numeric / max(len(feature_cols), 1)
     score -= non_num_ratio * 30
 
@@ -87,13 +90,21 @@ def split_data(
     Returns (train_df, test_df) with target column included in both.
     All encoders/scalers/RF must be fitted on train only.
     """
+    # FIX: stratify only for classification with sufficient class support
+    task_type = detect_task_type(df[target_col])
+    stratify  = None
+    if task_type == "Classification":
+        min_class_count = df[target_col].value_counts().min()
+        if min_class_count >= 2:
+            stratify = df[target_col]
+
     train_df, test_df = train_test_split(
-        df, test_size=TEST_SIZE, random_state=RANDOM_STATE
+        df, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=stratify
     )
+    strat_note = "with stratification" if stratify is not None else "without stratification (small class)"
     logs.append(
-        f"Train/test split: {len(train_df):,} train rows / "
-        f"{len(test_df):,} test rows (80/20, stratification not applied here — "
-        "use modeling.py for stratified splits)."
+        f"Train/test split ({strat_note}): {len(train_df):,} train rows / "
+        f"{len(test_df):,} test rows (80/20)."
     )
     return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
 
@@ -114,8 +125,8 @@ def smart_impute(
 
     # Drop rows where target is missing — never impute target
     if df[target_col].isnull().any():
-        n_before = len(df)
-        df       = df.dropna(subset=[target_col])
+        n_before  = len(df)
+        df        = df.dropna(subset=[target_col])
         n_dropped = n_before - len(df)
         logs.append(
             f"Dropped {n_dropped:,} rows where target `{target_col}` is missing. "
@@ -133,6 +144,10 @@ def smart_impute(
 
     for col in num_cols:
         if not df[col].isnull().any():
+            continue
+        # FIX: guard against all-NaN column
+        if df[col].dropna().empty:
+            logs.append(f"Skipped imputation for all-NaN column `{col}`.")
             continue
         skew = df[col].skew()
         if abs(skew) > 1:
@@ -164,7 +179,7 @@ def smart_encode(
     - nunique <= 10  → One-Hot Encoding (nominal safe)
     - nunique  > 10  → Label Encoding   (high cardinality)
     - Boolean        → cast to int
-    Target column is never encoded here (handled separately in modeling).
+    Target column is never encoded here.
     """
     df = df.copy()
 
@@ -187,12 +202,14 @@ def smart_encode(
         bool_new = df.select_dtypes(include="bool").columns
         if len(bool_new):
             df[bool_new] = df[bool_new].astype(int)
-        logs.append(f"One-Hot Encoded (≤10 unique): {ohe_cols} → {n_new} new columns.")
+        if logs is not None:
+            logs.append(f"One-Hot Encoded (≤10 unique): {ohe_cols} → {n_new} new columns.")
 
     for col in label_cols:
-        le       = LabelEncoder()
-        df[col]  = le.fit_transform(df[col].astype(str).fillna("__missing__"))
-        logs.append(f"Label Encoded (>10 unique): `{col}`.")
+        le      = LabelEncoder()
+        df[col] = le.fit_transform(df[col].astype(str).fillna("__missing__"))
+        if logs is not None:
+            logs.append(f"Label Encoded (>10 unique): `{col}`.")
 
     return df
 
@@ -214,8 +231,10 @@ def drop_collinear(
     if len(num_cols) < 3:
         return df
 
-    corr    = df[num_cols].corr().abs()
-    upper   = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    corr  = df[num_cols].corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+
+    # FIX: never add target_col to drop list even if it somehow slipped through
     to_drop = [
         col for col in upper.columns
         if any(upper[col] > COLLINEARITY_THRESHOLD) and col != target_col
@@ -242,11 +261,9 @@ def rf_feature_prune(
     """
     Fit a Random Forest on TRAIN data only to identify zero-importance features.
     Returns list of column names to drop.
-
-    ⚠️  Fitted on train set only — test set is never seen here.
-        This prevents leaking test distribution into feature selection.
+    Fitted on train set only — test set is never seen here.
     """
-    task_type  = detect_task_type(train_df[target_col])
+    task_type    = detect_task_type(train_df[target_col])
     feature_cols = [
         c for c in train_df.select_dtypes(include="number").columns
         if c != target_col
@@ -269,6 +286,11 @@ def rf_feature_prune(
         logs.append("RF pruning skipped — NaN values remain after imputation.")
         return []
 
+    # FIX: guard against datasets too small for RF
+    if len(X) < 10:
+        logs.append("RF pruning skipped — dataset too small (< 10 rows).")
+        return []
+
     try:
         if task_type == "Classification":
             rf = RandomForestClassifier(
@@ -280,8 +302,8 @@ def rf_feature_prune(
             )
 
         rf.fit(X, y)
-        importances    = rf.feature_importances_
-        zero_imp_cols  = [feature_cols[i] for i, imp in enumerate(importances) if imp == 0.0]
+        importances   = rf.feature_importances_
+        zero_imp_cols = [feature_cols[i] for i, imp in enumerate(importances) if imp == 0.0]
 
         if zero_imp_cols:
             logs.append(
@@ -313,33 +335,11 @@ def smart_auto_pipeline(
     target_col: str,
 ) -> tuple[pd.DataFrame, list, float, float]:
     """
-    Full smart pipeline in correct ML order:
-
-        0.  Compute initial readiness score
-        1.  Drop useless columns (empty, constant, unnamed)
-        2.  Fix numeric strings ($, commas, %)
-        3.  Detect and convert datetime columns
-        4.  Remove duplicate rows
-        5.  Drop target-missing rows / smart impute features
-        6.  Handle outliers (IQR cap) — on features only
-        7.  Train/test split  ← everything fitted after this point uses train only
-        8.  Extract datetime features (year, month, day…)
-        9.  Auto feature engineering (ratios + poly) — target excluded
-        10. Smart encode categoricals (OHE ≤10, Label >10) — target excluded
-        11. Drop collinear features
-        12. RF feature importance pruning — fitted on train only
-        13. Apply same column drops to test set
-        14. Compute final readiness score
-        15. Return train_df (ML-ready), logs, scores
-
-    Returns:
-        train_df    — cleaned, encoded, pruned training set
-        logs        — full audit trail of every step
-        init_score  — readiness score before pipeline
-        final_score — readiness score after pipeline
+    Full smart pipeline in correct ML order.
+    Returns (train_df, logs, init_score, final_score).
     """
-    logs       = []
-    df         = raw_df.copy()
+    logs = []
+    df   = raw_df.copy()
 
     # Validate target exists
     if target_col not in df.columns:
@@ -349,7 +349,7 @@ def smart_auto_pipeline(
     init_score = compute_readiness_score(df, target_col)
     logs.append(f"Initial readiness score: {init_score}%")
 
-    # ── Step 1: Drop useless columns ─────────────────────────────────────────
+    # ── Step 1: Drop useless columns ──────────────────────────────────────────
     df = drop_useless_columns(df, logs)
 
     # Ensure target wasn't dropped
@@ -369,10 +369,18 @@ def smart_auto_pipeline(
     # ── Step 5: Impute (skew-aware, target rows dropped not imputed) ──────────
     df = smart_impute(df, target_col, logs)
 
+    # FIX: guard against empty dataframe after dropping target-missing rows
+    if df.empty:
+        st.error("No rows remain after dropping rows with missing target values.")
+        return raw_df, logs, init_score, 0.0
+
     # ── Step 6: Cap outliers on features only ─────────────────────────────────
     target_series = df[target_col].copy()
     df_features   = df.drop(columns=[target_col])
     df_features   = handle_outliers(df_features, logs, method="IQR", action="Cap")
+    # FIX: realign index before concat in case handle_outliers resets index
+    df_features   = df_features.reset_index(drop=True)
+    target_series = target_series.reset_index(drop=True)
     df            = pd.concat([df_features, target_series], axis=1)
     logs.append("Outlier capping applied to feature columns only (target unchanged).")
 
@@ -388,8 +396,6 @@ def smart_auto_pipeline(
         train_df = auto_feature_engineering(
             train_df, poly=True, ratios=True, target=target_col, logs=logs
         )
-        # Apply same columns to test (only keep cols that exist in both)
-        shared_cols = [c for c in train_df.columns if c in test_df.columns or c == target_col]
     else:
         train_df = auto_feature_engineering(
             train_df, poly=False, ratios=True, target=target_col, logs=logs
@@ -407,10 +413,14 @@ def smart_auto_pipeline(
     )
 
     # ── Step 11: Drop collinear features ──────────────────────────────────────
-    train_df        = drop_collinear(train_df, target_col, logs)
+    train_df = drop_collinear(train_df, target_col, logs)
+
+    # FIX: build final feature list AFTER collinearity drop
     final_feat_cols = [c for c in train_df.columns if c != target_col]
-    # Apply same drops to test
-    test_df = test_df[[c for c in test_df.columns if c in train_df.columns]]
+
+    # Apply same drops to test — only keep cols present in train
+    test_cols_to_keep = [c for c in test_df.columns if c in train_df.columns]
+    test_df = test_df[test_cols_to_keep]
 
     # ── Step 12: RF pruning (train only) ─────────────────────────────────────
     cols_to_prune = rf_feature_prune(train_df, target_col, logs)
@@ -421,9 +431,12 @@ def smart_auto_pipeline(
     # ── Step 13: Final NaN check ──────────────────────────────────────────────
     remaining_nan = int(train_df.isnull().sum().sum())
     if remaining_nan > 0:
+        # FIX: fill any remaining NaN with 0 rather than leaving them
+        train_df = train_df.fillna(0)
+        test_df  = test_df.fillna(0)
         logs.append(
-            f"⚠️ {remaining_nan} NaN values remain in train set after pipeline. "
-            "Check datetime-derived columns or re-run with KNN imputation."
+            f"⚠️ {remaining_nan} NaN values filled with 0 in final train set "
+            "(likely from datetime-derived or ratio columns)."
         )
     else:
         logs.append("✅ No NaN values in final train set.")
