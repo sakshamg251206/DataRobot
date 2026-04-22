@@ -18,7 +18,12 @@ from sklearn.preprocessing import LabelEncoder
 import plotly.express as px
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
-import shap
+
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
 
 try:
     from xgboost import XGBClassifier, XGBRegressor
@@ -34,8 +39,8 @@ except ImportError:
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-RANDOM_STATE          = 42
-CV_FOLDS              = 5
+RANDOM_STATE                 = 42
+CV_FOLDS                     = 5
 CLASSIFICATION_NUNIQUE_LIMIT = 20   # numeric cols with fewer unique vals → classification
 
 
@@ -105,30 +110,33 @@ def _get_train_test(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     """
     Use the held-out test set from Smart Auto Mode if available.
-    Otherwise perform a fresh split — and warn the user that leakage
-    may have occurred if the pipeline was run manually.
+    Otherwise perform a fresh split.
     """
     test_data = st.session_state.get("test_data", None)
 
-    if test_data is not None and target_col in test_data.columns:
+    if test_data is not None and isinstance(test_data, pd.DataFrame) and target_col in test_data.columns:
         st.success(
             "✅ Using held-out test set from Smart Auto Mode. "
             "No leakage — test data was never seen during preprocessing."
         )
-        # Align columns between train X and test
-        test_features = [c for c in test_data.columns if c != target_col]
+        test_features  = [c for c in test_data.columns if c != target_col]
         train_features = X.columns.tolist()
 
         # Keep only common features, fill missing test dummies with 0
         test_X = test_data[test_features].reindex(columns=train_features, fill_value=0)
         test_y = test_data[target_col].copy()
 
-        # Encode test target if needed
+        # FIX: only encode if the column is not already numeric
         if test_y.dtype == object or str(test_y.dtype) == "category":
             le_t = LabelEncoder()
             le_t.fit(y.astype(str))
+            # FIX: handle unseen labels in test set gracefully
+            known_labels = set(le_t.classes_)
+            test_y_str   = test_y.astype(str).apply(
+                lambda v: v if v in known_labels else le_t.classes_[0]
+            )
             test_y = pd.Series(
-                le_t.transform(test_y.astype(str)), index=test_y.index
+                le_t.transform(test_y_str), index=test_y.index
             )
 
         return X, test_X, y, test_y
@@ -174,11 +182,11 @@ def _classification_metrics(
     """Full classification scorecard: accuracy, F1, precision, recall + confusion matrix."""
     y_pred = model.predict(X_test)
 
-    avg    = "binary" if len(np.unique(y_test)) == 2 else "weighted"
-    acc    = accuracy_score(y_test, y_pred)
-    f1     = f1_score(y_test, y_pred, average=avg, zero_division=0)
-    prec   = precision_score(y_test, y_pred, average=avg, zero_division=0)
-    rec    = recall_score(y_test, y_pred, average=avg, zero_division=0)
+    avg  = "binary" if len(np.unique(y_test)) == 2 else "weighted"
+    acc  = accuracy_score(y_test, y_pred)
+    f1   = f1_score(y_test, y_pred, average=avg, zero_division=0)
+    prec = precision_score(y_test, y_pred, average=avg, zero_division=0)
+    rec  = recall_score(y_test, y_pred, average=avg, zero_division=0)
 
     # Cross-validation on train set
     with warnings.catch_warnings():
@@ -186,14 +194,14 @@ def _classification_metrics(
         cv_scores = cross_val_score(model, X_train, y_train, cv=CV_FOLDS, scoring="f1_weighted")
 
     return {
-        "Model":      model_name,
-        "Accuracy":   round(acc,  4),
-        "F1":         round(f1,   4),
-        "Precision":  round(prec, 4),
-        "Recall":     round(rec,  4),
+        "Model":                    model_name,
+        "Accuracy":                 round(acc,  4),
+        "F1":                       round(f1,   4),
+        "Precision":                round(prec, 4),
+        "Recall":                   round(rec,  4),
         f"CV F1 ({CV_FOLDS}-fold)": round(cv_scores.mean(), 4),
-        "CV Std":     round(cv_scores.std(),  4),
-        "_y_pred":    y_pred,
+        "CV Std":                   round(cv_scores.std(),  4),
+        "_y_pred":                  y_pred,
     }
 
 
@@ -212,13 +220,13 @@ def _regression_metrics(
         cv_scores = cross_val_score(model, X_train, y_train, cv=CV_FOLDS, scoring="r2")
 
     return {
-        "Model":               model_name,
-        "R²":                  round(r2,   4),
-        "RMSE":                round(rmse, 4),
-        "MAE":                 round(mae,  4),
+        "Model":                    model_name,
+        "R²":                       round(r2,   4),
+        "RMSE":                     round(rmse, 4),
+        "MAE":                      round(mae,  4),
         f"CV R² ({CV_FOLDS}-fold)": round(cv_scores.mean(), 4),
-        "CV Std":              round(cv_scores.std(),  4),
-        "_y_pred":             y_pred,
+        "CV Std":                   round(cv_scores.std(),  4),
+        "_y_pred":                  y_pred,
     }
 
 
@@ -241,22 +249,30 @@ def run_model_comparison(
 
     for i, (name, model) in enumerate(models.items()):
         with st.spinner(f"Training {name}..."):
-            model.fit(X_train, y_train)
-            fitted[name] = model
+            try:
+                model.fit(X_train, y_train)
+                fitted[name] = model
 
-            if task_type == "Classification":
-                row = _classification_metrics(model, X_train, X_test, y_train, y_test, name)
-            else:
-                row = _regression_metrics(model, X_train, X_test, y_train, y_test, name)
+                if task_type == "Classification":
+                    row = _classification_metrics(model, X_train, X_test, y_train, y_test, name)
+                else:
+                    row = _regression_metrics(model, X_train, X_test, y_train, y_test, name)
 
-            results.append(row)
+                results.append(row)
+            except Exception as e:
+                st.warning(f"⚠️ {name} failed to train: {e}")
         progress.progress((i + 1) / n, text=f"Trained {name}")
 
     progress.empty()
 
+    # FIX: guard against all models failing
+    if not results:
+        st.error("All models failed to train. Check your data for remaining issues.")
+        return None, None, []
+
     # Sort by primary metric
     sort_key = "F1" if task_type == "Classification" else "R²"
-    results_sorted = sorted(results, key=lambda r: r[sort_key], reverse=True)
+    results_sorted = sorted(results, key=lambda r: r.get(sort_key, 0), reverse=True)
 
     # Display table (hide internal _y_pred column)
     display_cols = [k for k in results_sorted[0].keys() if not k.startswith("_")]
@@ -342,8 +358,13 @@ def explain_features(
         st.info("Feature importance not available for this model type.")
         return
 
+    # FIX: guard length mismatch between feature_names and importances
+    min_len = min(len(feature_names), len(importances))
     feat_df = (
-        pd.DataFrame({"Feature": feature_names, "Importance": importances})
+        pd.DataFrame({
+            "Feature":    feature_names[:min_len],
+            "Importance": importances[:min_len]
+        })
         .sort_values("Importance", ascending=False)
         .head(15)
     )
@@ -389,6 +410,12 @@ def explain_features(
 # ── SHAP explainability ────────────────────────────────────────────────────────
 def explain_shap(model, X_train: pd.DataFrame, X_test: pd.DataFrame):
     st.subheader("SHAP Explainability")
+
+    # FIX: check SHAP availability before proceeding
+    if not SHAP_AVAILABLE:
+        st.info("Install `shap` to enable SHAP explainability: `pip install shap`")
+        return
+
     st.info(
         "SHAP shows exactly how much each feature pushed a single prediction "
         "above or below the model's baseline."
@@ -406,13 +433,13 @@ def explain_shap(model, X_train: pd.DataFrame, X_test: pd.DataFrame):
 
     with st.spinner("Computing SHAP values..."):
         try:
-            explainer   = shap.TreeExplainer(model)
-            instance    = X_test.iloc[[instance_idx]]
+            import shap as shap_lib
+            explainer   = shap_lib.TreeExplainer(model)
+            instance    = X_test.iloc[[int(instance_idx)]]
             shap_values = explainer.shap_values(instance)
 
             # Handle binary classification (list of 2 arrays) and multiclass
             if isinstance(shap_values, list):
-                # Use positive class for binary; mean across classes for multiclass
                 sv = shap_values[1] if len(shap_values) == 2 else np.mean(
                     np.abs(shap_values), axis=0
                 )
@@ -423,7 +450,7 @@ def explain_shap(model, X_train: pd.DataFrame, X_test: pd.DataFrame):
             if isinstance(base_val, (list, np.ndarray)):
                 base_val = base_val[1] if len(base_val) == 2 else float(np.mean(base_val))
 
-            explanation = shap.Explanation(
+            explanation = shap_lib.Explanation(
                 values=sv[0],
                 base_values=float(base_val),
                 data=instance.iloc[0].values,
@@ -431,7 +458,7 @@ def explain_shap(model, X_train: pd.DataFrame, X_test: pd.DataFrame):
             )
 
             fig, ax = plt.subplots(figsize=(9, 4))
-            shap.plots.waterfall(explanation, show=False)
+            shap_lib.plots.waterfall(explanation, show=False)
             st.pyplot(plt.gcf())
             plt.clf()
             plt.close("all")
@@ -453,12 +480,16 @@ def plot_learning_curve(model, X_train: pd.DataFrame, y_train: pd.Series):
     )
 
     with st.spinner("Computing learning curves (this may take a moment)..."):
-        train_sizes, train_scores, cv_scores = learning_curve(
-            model, X_train, y_train,
-            cv=CV_FOLDS, n_jobs=-1,
-            train_sizes=np.linspace(0.2, 1.0, 6),
-            error_score="raise",
-        )
+        try:
+            train_sizes, train_scores, cv_scores = learning_curve(
+                model, X_train, y_train,
+                cv=CV_FOLDS, n_jobs=-1,
+                train_sizes=np.linspace(0.2, 1.0, 6),
+                error_score="raise",
+            )
+        except Exception as e:
+            st.warning(f"Learning curve computation failed: {e}")
+            return
 
     train_mean = np.mean(train_scores, axis=1)
     train_std  = np.std(train_scores,  axis=1)
@@ -535,10 +566,19 @@ def prepare_modeling(df: pd.DataFrame):
 
     if task_type == "Classification":
         n_classes = df[target_col].nunique()
-        st.write(f"Classes: **{n_classes}** unique values → {df[target_col].unique().tolist()[:10]}")
+        # FIX: limit display of class values to avoid huge output
+        all_classes = df[target_col].unique().tolist()
+        display_classes = all_classes[:10]
+        suffix = f" ... ({n_classes - 10} more)" if n_classes > 10 else ""
+        st.write(f"Classes: **{n_classes}** unique values → {display_classes}{suffix}")
 
     # Prepare X, y
     X, y, le = _prepare_X_y(df, target_col, task_type)
+
+    # FIX: guard against empty X after dropping NaN rows
+    if X.empty or y.empty:
+        st.error("No valid rows remain after dropping rows with missing target values.")
+        return
 
     # Train/test split (uses Smart Mode held-out set if available)
     test_size = st.slider(
@@ -561,6 +601,10 @@ def prepare_modeling(df: pd.DataFrame):
             best_model, best_name, all_results = run_model_comparison(
                 task_type, X_train, X_test, y_train, y_test
             )
+
+        # FIX: guard against all models failing
+        if best_model is None:
+            return
 
         st.divider()
         explain_features(best_model, X_train.columns.tolist(), target_col, task_type)
