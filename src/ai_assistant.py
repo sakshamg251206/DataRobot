@@ -21,31 +21,24 @@ def _build_dataset_context(df: pd.DataFrame) -> str:
     missing  = df.isnull().sum()
     missing_info = {c: int(missing[c]) for c in df.columns if missing[c] > 0}
 
+    # FIX: truncate describe output for very wide datasets to avoid token blowout
+    try:
+        stats_str = df.describe(include="all").round(2).to_string()
+        if len(stats_str) > 3000:
+            stats_str = df.describe(include="all").round(2).iloc[:, :10].to_string()
+            stats_str += f"\n... (truncated — showing first 10 of {df.shape[1]} columns)"
+    except Exception:
+        stats_str = "Statistics unavailable."
+
     context = (
         f"Dataset shape: {df.shape[0]:,} rows × {df.shape[1]} columns.\n"
         f"Numeric columns ({len(num_cols)}): {num_cols}\n"
         f"Categorical columns ({len(cat_cols)}): {cat_cols}\n"
         f"Missing values: {missing_info if missing_info else 'None'}\n"
         f"Sample (first 3 rows):\n{df.head(3).to_string()}\n"
-        f"Summary statistics:\n{df.describe(include='all').round(2).to_string()}"
+        f"Summary statistics:\n{stats_str}"
     )
     return context
-
-
-# ── Agent factory (cached per dataframe hash) ──────────────────────────────────
-@st.cache_resource(show_spinner=False)
-def _build_agent(df_hash: int, api_key: str):
-    """
-    Build and cache the pandas dataframe agent.
-    Cached on df_hash so it rebuilds only when data changes.
-    The agent is NOT recreated on every message.
-    """
-    llm = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        temperature=0,
-        google_api_key=api_key,
-    )
-    return llm
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -97,7 +90,7 @@ def render_ai_assistant(df: pd.DataFrame | None):
         "• *'Are there any strong correlations between numeric columns?'*"
     )
 
-    # ── Session state init ─────────────────────────────────────────────────────
+    # ── Session state init (safe fallback) ────────────────────────────────────
     if "chat_messages" not in st.session_state:
         st.session_state.chat_messages = []
 
@@ -118,19 +111,19 @@ def render_ai_assistant(df: pd.DataFrame | None):
         with st.chat_message("assistant"):
             with st.spinner("Analyzing..."):
                 try:
-                    # Build dataset context for system prompt
                     dataset_context = _build_dataset_context(df)
 
-                    # Build conversation history string to give agent memory
+                    # Build conversation history string for memory
                     history_text = ""
-                    if len(st.session_state.chat_messages) > 1:
+                    prior_msgs   = st.session_state.chat_messages[:-1]   # exclude current
+                    if prior_msgs:
                         history_lines = []
-                        for m in st.session_state.chat_messages[:-1]:  # exclude current
+                        for m in prior_msgs[-10:]:  # last 5 turns (10 messages)
                             role = "User" if m["role"] == "user" else "Assistant"
                             history_lines.append(f"{role}: {m['content']}")
                         history_text = (
                             "\n\nPrevious conversation:\n"
-                            + "\n".join(history_lines[-10:])  # last 5 turns
+                            + "\n".join(history_lines)
                             + "\n\nCurrent question:"
                         )
 
@@ -146,6 +139,8 @@ def render_ai_assistant(df: pd.DataFrame | None):
                         verbose=False,
                         allow_dangerous_code=True,
                         handle_parsing_errors=True,
+                        # FIX: use agent_type string for compatibility with newer langchain
+                        agent_type="openai-tools",
                         prefix=(
                             "You are a Senior Data Analyst assistant. "
                             "Answer questions about the user's dataset clearly and concisely. "
@@ -154,7 +149,6 @@ def render_ai_assistant(df: pd.DataFrame | None):
                         ),
                     )
 
-                    # Include history in the prompt for conversational memory
                     full_prompt = history_text + user_prompt if history_text else user_prompt
                     response    = agent.invoke(full_prompt)
                     output_text = response.get("output", str(response))
@@ -165,12 +159,32 @@ def render_ai_assistant(df: pd.DataFrame | None):
                     )
 
                 except Exception as e:
-                    error_msg = (
-                        f"I couldn't answer that question. Error: `{e}`  \n\n"
-                        "Try rephrasing, or ask a simpler question like "
-                        "'What are the column names?' to verify the connection works."
-                    )
-                    st.error(error_msg)
-                    st.session_state.chat_messages.append(
-                        {"role": "assistant", "content": error_msg}
-                    )
+                    # FIX: try a simpler fallback without agent if agent construction fails
+                    try:
+                        llm = ChatGoogleGenerativeAI(
+                            model="gemini-2.5-flash",
+                            temperature=0,
+                            google_api_key=api_key,
+                        )
+                        fallback_prompt = (
+                            f"You are a data analyst. Here is a dataset overview:\n"
+                            f"{_build_dataset_context(df)}\n\n"
+                            f"Answer this question based only on the above context "
+                            f"(you cannot run code):\n{user_prompt}"
+                        )
+                        resp        = llm.invoke(fallback_prompt)
+                        output_text = resp.content + "\n\n*(answered without code execution — install langchain-experimental for full analysis)*"
+                        st.markdown(output_text)
+                        st.session_state.chat_messages.append(
+                            {"role": "assistant", "content": output_text}
+                        )
+                    except Exception as e2:
+                        error_msg = (
+                            f"I couldn't answer that question. Error: `{e}` / `{e2}`  \n\n"
+                            "Try rephrasing, or ask a simpler question like "
+                            "'What are the column names?' to verify the connection works."
+                        )
+                        st.error(error_msg)
+                        st.session_state.chat_messages.append(
+                            {"role": "assistant", "content": error_msg}
+                        )
