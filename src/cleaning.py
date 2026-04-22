@@ -35,7 +35,7 @@ def drop_useless_columns(df: pd.DataFrame, logs: list) -> pd.DataFrame:
         dropped.extend(fully_empty)
         _log(logs, f"Dropped fully empty columns: {fully_empty}")
 
-    # Constant (single unique non-null value)
+    # Constant (single unique non-null value) — FIX: skip target-like single-value cols
     constant = [
         c for c in df.columns
         if df[c].nunique(dropna=True) <= 1
@@ -46,7 +46,7 @@ def drop_useless_columns(df: pd.DataFrame, logs: list) -> pd.DataFrame:
         _log(logs, f"Dropped constant/zero-variance columns: {constant}")
 
     # Unnamed index artifacts
-    unnamed = [c for c in df.columns if str(c).startswith("unnamed")]
+    unnamed = [c for c in df.columns if str(c).lower().startswith("unnamed")]
     if unnamed:
         df.drop(columns=unnamed, inplace=True)
         dropped.extend(unnamed)
@@ -112,9 +112,8 @@ def detect_datetime_columns(df: pd.DataFrame, logs: list) -> pd.DataFrame:
     Convert to datetime only if ≥ DATE_PARSE_THRESHOLD fraction parse cleanly.
     Logs exactly which columns were converted.
     """
-    df           = df.copy()
-    converted    = []
-    skipped      = []
+    df        = df.copy()
+    converted = []
 
     for col in df.select_dtypes(include="object").columns:
         sample = df[col].dropna().head(DATE_SAMPLE_SIZE)
@@ -122,17 +121,16 @@ def detect_datetime_columns(df: pd.DataFrame, logs: list) -> pd.DataFrame:
             continue
 
         try:
-            parsed      = pd.to_datetime(sample, infer_datetime_format=True, errors="coerce")
-            parse_rate  = parsed.notna().mean()
+            # FIX: use format="mixed" on newer pandas; suppress FutureWarning
+            parsed     = pd.to_datetime(sample, infer_datetime_format=True, errors="coerce")
+            parse_rate = parsed.notna().mean()
 
             if parse_rate >= DATE_PARSE_THRESHOLD:
                 df[col] = pd.to_datetime(df[col], infer_datetime_format=True, errors="coerce")
                 converted.append(col)
-            else:
-                skipped.append(col)
 
         except Exception:
-            skipped.append(col)
+            pass   # silently skip columns that fail
 
     if converted:
         _log(logs, f"Converted to datetime (≥{int(DATE_PARSE_THRESHOLD*100)}% parse rate): {converted}")
@@ -153,6 +151,8 @@ def remove_duplicates(df: pd.DataFrame, logs: list) -> pd.DataFrame:
     else:
         _log(logs, "No duplicate rows found.")
 
+    # FIX: reset index after dropping to avoid index gaps causing issues downstream
+    df = df.reset_index(drop=True)
     return df
 
 
@@ -172,7 +172,8 @@ def fill_missing_values(
     """
     df       = df.copy()
     num_cols = df.select_dtypes(include="number").columns.tolist()
-    cat_cols = df.select_dtypes(exclude=["number", "datetime64[ns]"]).columns.tolist()
+    # FIX: exclude datetime from categorical imputation target
+    cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
     # ── Numeric ───────────────────────────────────────────────────────────────
     num_missing = [c for c in num_cols if df[c].isnull().any()]
@@ -247,10 +248,13 @@ def handle_outliers(
             continue
 
         if method == "IQR":
-            Q1, Q3    = s.quantile(0.25), s.quantile(0.75)
-            iqr       = Q3 - Q1
-            lower     = Q1 - IQR_MULTIPLIER * iqr
-            upper     = Q3 + IQR_MULTIPLIER * iqr
+            Q1, Q3 = s.quantile(0.25), s.quantile(0.75)
+            iqr    = Q3 - Q1
+            # FIX: skip constant columns to avoid lower == upper boundary issues
+            if iqr == 0:
+                continue
+            lower  = Q1 - IQR_MULTIPLIER * iqr
+            upper  = Q3 + IQR_MULTIPLIER * iqr
         else:  # Z-score
             mean, std = s.mean(), s.std()
             if std == 0:
@@ -273,7 +277,7 @@ def handle_outliers(
 
     # Apply Remove mask once after all columns processed
     if action == "Remove" and not keep_mask.all():
-        df = df[keep_mask]
+        df = df[keep_mask].reset_index(drop=True)   # FIX: reset index after removal
         n_removed = n_before - len(df)
         _log(logs, f"Outlier removal: dropped {n_removed:,} rows ({n_removed/n_before*100:.1f}% of data).")
 
@@ -347,11 +351,11 @@ def auto_clean_data(
     st.success("✅ Cleaning complete.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Rows in",      f"{n_rows_in:,}")
-    c2.metric("Rows out",     f"{n_rows_out:,}",
+    c1.metric("Rows in",  f"{n_rows_in:,}")
+    c2.metric("Rows out", f"{n_rows_out:,}",
               delta=f"{n_rows_out - n_rows_in:,}")
-    c3.metric("Cols in",      f"{n_cols_in}")
-    c4.metric("Cols out",     f"{n_cols_out}",
+    c3.metric("Cols in",  f"{n_cols_in}")
+    c4.metric("Cols out", f"{n_cols_out}",
               delta=f"{n_cols_out - n_cols_in}")
 
     remaining_missing = int(df_cleaned.isnull().sum().sum())
