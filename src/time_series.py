@@ -15,16 +15,17 @@ except ImportError:
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-MIN_POINTS_ARIMA      = 20    # minimum data points required for ARIMA
-MIN_POINTS_DECOMPOSE  = 24    # minimum for seasonal decomposition
-ADF_SIGNIFICANCE      = 0.05  # p-value threshold for stationarity test
+MIN_POINTS_ARIMA     = 20    # minimum data points required for ARIMA
+MIN_POINTS_DECOMPOSE = 24    # minimum for seasonal decomposition
+ADF_SIGNIFICANCE     = 0.05  # p-value threshold for stationarity test
 
 
 # ── Frequency options ──────────────────────────────────────────────────────────
 FREQ_OPTIONS = {
     "Daily":     "D",
     "Weekly":    "W",
-    "Monthly":   "ME",    # "ME" replaces deprecated "M" in pandas >= 2.2
+    # FIX: use "ME"/"QE"/"YE" for pandas >= 2.2 with fallback for older versions
+    "Monthly":   "ME",
     "Quarterly": "QE",
     "Yearly":    "YE",
 }
@@ -35,6 +36,18 @@ AGG_OPTIONS = {
     "Last":  "last",
     "Max":   "max",
     "Min":   "min",
+}
+
+# Period (seasonal cycle length) per frequency code
+PERIOD_MAP = {
+    "D":  7,
+    "W":  52,
+    "ME": 12,
+    "M":  12,   # fallback for older pandas
+    "QE": 4,
+    "Q":  4,
+    "YE": 1,
+    "Y":  1,
 }
 
 
@@ -49,8 +62,17 @@ def _resample(
     freq:   str,
     agg:    str,
 ) -> pd.Series:
-    """Resample a time-indexed series with the chosen aggregation function."""
-    resampled = series.resample(freq)
+    """
+    Resample a time-indexed series with the chosen aggregation function.
+    FIX: falls back to older frequency aliases if pandas raises ValueError.
+    """
+    # Fallback map for pandas < 2.2
+    fallback = {"ME": "M", "QE": "Q", "YE": "Y"}
+    try:
+        resampled = series.resample(freq)
+    except ValueError:
+        freq = fallback.get(freq, freq)
+        resampled = series.resample(freq)
     return getattr(resampled, agg)().dropna()
 
 
@@ -61,9 +83,14 @@ def _generate_future_dates(
 ) -> pd.DatetimeIndex:
     """
     Generate `steps` future period-end dates after `last_date`.
-    Uses pd.date_range with the same frequency as the resampled series.
+    FIX: falls back to older aliases for pandas < 2.2.
     """
-    return pd.date_range(start=last_date, periods=steps + 1, freq=freq)[1:]
+    fallback = {"ME": "M", "QE": "Q", "YE": "Y"}
+    try:
+        return pd.date_range(start=last_date, periods=steps + 1, freq=freq)[1:]
+    except ValueError:
+        freq = fallback.get(freq, freq)
+        return pd.date_range(start=last_date, periods=steps + 1, freq=freq)[1:]
 
 
 # ── Stationarity check ─────────────────────────────────────────────────────────
@@ -72,9 +99,9 @@ def _adf_test(series: pd.Series) -> tuple[bool, float, float]:
     Augmented Dickey-Fuller test for stationarity.
     Returns (is_stationary, adf_stat, p_value).
     """
-    result       = adfuller(series.dropna(), autolag="AIC")
-    adf_stat     = result[0]
-    p_value      = result[1]
+    result        = adfuller(series.dropna(), autolag="AIC")
+    adf_stat      = result[0]
+    p_value       = result[1]
     is_stationary = p_value < ADF_SIGNIFICANCE
     return is_stationary, adf_stat, p_value
 
@@ -104,7 +131,7 @@ def show_stationarity(series: pd.Series, label: str):
 
 
 # ── Decomposition ──────────────────────────────────────────────────────────────
-def show_decomposition(series: pd.Series, freq_label: str):
+def show_decomposition(series: pd.Series, freq: str):
     """
     Decompose the series into trend, seasonality, and residual.
     Requires at least MIN_POINTS_DECOMPOSE data points.
@@ -117,9 +144,7 @@ def show_decomposition(series: pd.Series, freq_label: str):
         return
 
     try:
-        # period: number of observations per seasonal cycle
-        period_map = {"D": 7, "W": 52, "ME": 12, "QE": 4, "YE": 1}
-        period     = period_map.get(freq_label, 12)
+        period = PERIOD_MAP.get(freq, 12)
 
         if len(series) < 2 * period:
             st.info(
@@ -134,10 +159,10 @@ def show_decomposition(series: pd.Series, freq_label: str):
 
         fig = go.Figure()
         components = {
-            "Observed":   decomp.observed,
-            "Trend":      decomp.trend,
-            "Seasonal":   decomp.seasonal,
-            "Residual":   decomp.resid,
+            "Observed": decomp.observed,
+            "Trend":    decomp.trend,
+            "Seasonal": decomp.seasonal,
+            "Residual": decomp.resid,
         }
         colors = ["#1d9e75", "#378add", "#e24b4a", "#888780"]
 
@@ -196,9 +221,9 @@ def run_arima_forecast(
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                model     = ARIMA(series, order=(p, d, q))
-                fit       = model.fit()
-                forecast  = fit.get_forecast(steps=steps)
+                model    = ARIMA(series, order=(p, d, q))
+                fit      = model.fit()
+                forecast = fit.get_forecast(steps=steps)
 
             f_mean = forecast.predicted_mean
             f_ci   = forecast.conf_int(alpha=0.05)  # 95% CI
@@ -218,13 +243,12 @@ def run_arima_forecast(
                 line=dict(color="#1d9e75", width=2),
             ))
 
-            # Confidence interval band
+            # FIX: use lists not pd.concat for the CI band — avoids index alignment issues
+            ci_x = list(future_dates) + list(future_dates[::-1])
+            ci_y = list(f_ci.iloc[:, 1]) + list(f_ci.iloc[:, 0].iloc[::-1])
+
             fig.add_trace(go.Scatter(
-                x=pd.concat([
-                    pd.Series(future_dates),
-                    pd.Series(future_dates[::-1])
-                ]),
-                y=pd.concat([f_ci.iloc[:, 1], f_ci.iloc[:, 0].iloc[::-1]]),
+                x=ci_x, y=ci_y,
                 fill="toself",
                 fillcolor="rgba(55,138,221,0.15)",
                 line=dict(color="rgba(0,0,0,0)"),
@@ -277,8 +301,8 @@ def run_time_series_analysis(df: pd.DataFrame):
     st.subheader("Time Series Analysis & Forecasting")
 
     if not STATSMODELS_AVAILABLE:
-        st.error(
-            "Install `statsmodels` to use time series features: "
+        st.warning(
+            "Install `statsmodels` to unlock ARIMA forecasting and stationarity tests: "
             "`pip install statsmodels`"
         )
 
@@ -291,21 +315,21 @@ def run_time_series_analysis(df: pd.DataFrame):
             "Run the cleaning pipeline first (Step 3 or Step 4) to convert "
             "date-like columns to datetime format."
         )
+        # FIX: offer a helpful tip for common date column names
+        possible = [c for c in df.columns if any(kw in c.lower() for kw in ["date", "time", "year", "month"])]
+        if possible:
+            st.info(f"Possible date columns found (run cleaning first): {possible}")
         return
 
     col1, col2 = st.columns(2)
     with col1:
-        dt_col = st.selectbox(
-            "Date/time column", dt_cols, key="ts_dt_col"
-        )
+        dt_col = st.selectbox("Date/time column", dt_cols, key="ts_dt_col")
     with col2:
         num_cols = df.select_dtypes(include="number").columns.tolist()
         if not num_cols:
             st.error("No numeric columns available to analyse over time.")
             return
-        target_col = st.selectbox(
-            "Metric to analyse", num_cols, key="ts_target"
-        )
+        target_col = st.selectbox("Metric to analyse", num_cols, key="ts_target")
 
     # ── Resampling options ─────────────────────────────────────────────────────
     col3, col4 = st.columns(2)
@@ -325,9 +349,15 @@ def run_time_series_analysis(df: pd.DataFrame):
     agg  = AGG_OPTIONS[agg_label]
 
     # ── Build time series ──────────────────────────────────────────────────────
-    ts_df = df[[dt_col, target_col]].copy()
+    ts_df = df[[dt_col, target_col]].dropna(subset=[dt_col]).copy()  # FIX: drop NaT index rows
     ts_df = ts_df.sort_values(dt_col).set_index(dt_col)
-    ts    = _resample(ts_df[target_col], freq, agg)
+
+    # FIX: deduplicate index before resampling to avoid ambiguous resampling results
+    if ts_df.index.duplicated().any():
+        ts_df = ts_df[~ts_df.index.duplicated(keep="last")]
+        st.info("ℹ️ Duplicate timestamps detected and deduplicated (kept last value).")
+
+    ts = _resample(ts_df[target_col], freq, agg)
 
     st.write(
         f"Resampled to **{freq_label}** using **{agg_label}** "
@@ -355,9 +385,11 @@ def run_time_series_analysis(df: pd.DataFrame):
 
     # ── Decomposition ──────────────────────────────────────────────────────────
     with st.expander("📊 Seasonal Decomposition", expanded=False):
+        # FIX: pass freq string not freq_label so PERIOD_MAP lookup works
         show_decomposition(ts, freq)
 
     # ── Stationarity ──────────────────────────────────────────────────────────
+    recommended_d = 1  # safe default
     with st.expander("📐 Stationarity Test (ADF)", expanded=False):
         st.caption(
             "ARIMA requires a stationary series. "
@@ -366,24 +398,22 @@ def run_time_series_analysis(df: pd.DataFrame):
         if STATSMODELS_AVAILABLE:
             is_stat = show_stationarity(ts, target_col)
             recommended_d = 0 if is_stat else 1
-        else:
-            recommended_d = 1
 
     # ── ARIMA forecast ─────────────────────────────────────────────────────────
     st.subheader("ARIMA Forecast")
 
     col5, col6, col7, col8 = st.columns(4)
     with col5:
-        p = st.number_input("p (AR order)",    min_value=0, max_value=5,
+        p = st.number_input("p (AR order)",     min_value=0, max_value=5,
                             value=1, step=1, key="arima_p",
                             help="Number of autoregressive terms.")
     with col6:
         d = st.number_input("d (differencing)", min_value=0, max_value=2,
-                            value=recommended_d if STATSMODELS_AVAILABLE else 1,
+                            value=recommended_d,
                             step=1, key="arima_d",
                             help="Degree of differencing. ADF test recommends this value above.")
     with col7:
-        q = st.number_input("q (MA order)",    min_value=0, max_value=5,
+        q = st.number_input("q (MA order)",     min_value=0, max_value=5,
                             value=1, step=1, key="arima_q",
                             help="Number of moving average terms.")
     with col8:
