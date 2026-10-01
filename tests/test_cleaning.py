@@ -69,3 +69,21 @@ def test_knn_imputation_runs():
     )
     cleaned, _ = clean_dataset(df, CleaningOptions(impute=ImputeStrategy.KNN))
     assert cleaned.isna().sum().sum() == 0
+
+
+def test_day_first_dates_are_parsed_consistently():
+    df = pd.DataFrame({"d": ["01/01/2022", "02/01/2022", "13/01/2022", "31/01/2022"]})
+    out = parse_datetime_columns(df, [])
+    assert out["d"].dt.strftime("%Y-%m-%d").tolist() == [
+        "2022-01-01",
+        "2022-01-02",
+        "2022-01-13",
+        "2022-01-31",
+    ]
+
+
+def test_iso_and_month_first_dates_are_unchanged():
+    iso = parse_datetime_columns(pd.DataFrame({"d": ["2024-01-05", "2024-02-06"]}), [])
+    assert iso["d"].dt.month.tolist() == [1, 2]
+    us = parse_datetime_columns(pd.DataFrame({"d": ["01/02/2022", "12/31/2022"]}), [])
+    assert us["d"].dt.strftime("%m-%d").tolist() == ["01-02", "12-31"]

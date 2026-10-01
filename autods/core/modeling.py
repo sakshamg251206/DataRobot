@@ -46,6 +46,7 @@ from autods.core.dtypes import (
     categorical_columns,
     datetime_columns,
     numeric_columns,
+    to_datetime,
 )
 from autods.core.profiling import ColumnKind, classify_column
 
@@ -108,7 +109,7 @@ class DatetimeFeatures(BaseEstimator, TransformerMixin):
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         out = {}
         for col in X.columns:
-            parsed = pd.to_datetime(X[col], errors="coerce", format="mixed")
+            parsed = to_datetime(X[col])
             for part in self.parts:
                 out[f"{col}_{part}"] = getattr(parsed.dt, part).astype(float)
         return pd.DataFrame(out, index=X.index)

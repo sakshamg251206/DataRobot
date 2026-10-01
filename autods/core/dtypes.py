@@ -62,10 +62,27 @@ def numeric_parse_rate(series: pd.Series) -> float:
 
 
 def to_datetime(series: pd.Series) -> pd.Series:
-    """Parse a column to datetime, coercing unparseable values to ``NaT``."""
+    """Parse a column to datetime, coercing unparseable values to ``NaT``.
+
+    One format is inferred for the whole column so that ``01/02/2024`` is not
+    read as 1 February in one row and 2 January in another. Month-first (and
+    ISO) is preferred; day-first is used only when it parses strictly more
+    values, e.g. a column containing ``13/01/2024``. Columns that genuinely mix
+    formats fall back to per-value parsing.
+    """
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    present = series.notna().sum()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return pd.to_datetime(series, errors="coerce", format="mixed")
+        month_first = pd.to_datetime(series, errors="coerce")
+        day_first = pd.to_datetime(series, errors="coerce", dayfirst=True)
+        best = day_first if day_first.notna().sum() > month_first.notna().sum() else month_first
+        if present and best.notna().sum() / present < 0.8:
+            mixed = pd.to_datetime(series, errors="coerce", format="mixed")
+            if mixed.notna().sum() > best.notna().sum():
+                return mixed
+    return best
 
 
 def looks_like_datetime(series: pd.Series, threshold: float = 0.8, sample_size: int = 200) -> bool:
