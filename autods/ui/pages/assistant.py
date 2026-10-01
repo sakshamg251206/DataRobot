@@ -7,7 +7,7 @@ from autods.ai.client import AIError, ChatTurn
 from autods.ai.prompts import assistant_system_prompt, dataset_context
 from autods.config import get_settings
 from autods.ui import state
-from autods.ui.components import ai_client, dataset_picker, page_header, require_data
+from autods.ui.components import READABLE, ai_client, dataset_picker, page_header, require_data
 
 page_header(
     "AI assistant",
@@ -29,7 +29,7 @@ if not state.api_key():
     st.stop()
 
 settings = get_settings()
-_, df = dataset_picker("chat_version")
+_, df = dataset_picker("chat_version", prefer=READABLE)
 context = dataset_context(df)
 use_agent = False
 if settings.enable_code_agent:

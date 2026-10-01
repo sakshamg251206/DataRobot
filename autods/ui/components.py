@@ -59,22 +59,30 @@ def require_data() -> None:
         st.stop()
 
 
+READABLE = (state.CLEANED, state.ORIGINAL)
+
+
 def dataset_picker(
-    key: str, label: str = "Dataset version", default: str | None = None
+    key: str, label: str = "Dataset version", prefer: tuple[str, ...] | None = None
 ) -> tuple[str, pd.DataFrame]:
-    """Let the user choose which version of the data a page works on (latest by default)."""
+    """Let the user choose which version of the data a page works on.
+
+    The default is the first available name in ``prefer`` (e.g. human-readable
+    versions for exploration pages), otherwise the most recent version.
+    """
     available = state.versions()
     names = list(available)
     if len(names) == 1:
         return names[0], available[names[0]].df
+    default = next((n for n in prefer or () if n in names), names[-1])
     choice = st.segmented_control(
         label,
         names,
-        default=default if default in names else names[-1],
+        default=default,
         key=key,
         help=" · ".join(f"**{n}**: {state.VERSION_HELP[n]}" for n in names),
     )
-    choice = choice or names[-1]
+    choice = choice or default
     return choice, available[choice].df
 
 

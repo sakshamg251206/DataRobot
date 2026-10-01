@@ -15,7 +15,7 @@ from autods.core.timeseries import (
     decompose,
 )
 from autods.ui import charts, state
-from autods.ui.components import dataset_picker, page_header, require_data
+from autods.ui.components import READABLE, dataset_picker, page_header, require_data
 
 page_header(
     "Forecast",
@@ -25,7 +25,7 @@ page_header(
 )
 require_data()
 
-version_name, df = dataset_picker("ts_version")
+version_name, df = dataset_picker("ts_version", prefer=READABLE)
 cache = state.page_cache()
 
 

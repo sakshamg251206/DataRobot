@@ -18,6 +18,7 @@ from autods.core.modeling import (
     detect_task_type,
     export_model,
     feature_importance,
+    leakage_suspects,
     learning_curve_data,
     plan_features,
     shap_explanation,
@@ -51,12 +52,10 @@ settings = get_settings()
 # ── Setup ──────────────────────────────────────────────────────────────────────
 with st.container(border=True):
     columns = list(df.columns)
-    version = state.get_version(source_name)
-    remembered = version.target if version and version.target in columns else None
     target = st.selectbox(
         "Target column (what to predict)",
         columns,
-        index=columns.index(remembered) if remembered else len(columns) - 1,
+        index=columns.index(state.default_target(columns)),
         key=f"target_{source_name}",
     )
     guessed = detect_task_type(df[target]) if df[target].notna().any() else TaskType.REGRESSION
@@ -94,6 +93,14 @@ with st.container(border=True):
         st.caption(
             "Left out automatically: "
             + "; ".join(f"`{c}` — {why}" for c, why in plan.excluded.items())
+        )
+    suspects = [c for c in leakage_suspects(df, target) if c in plan.columns]
+    if suspects:
+        st.warning(
+            f"{column_list(suspects)} {'is' if len(suspects) == 1 else 'are'} almost perfectly "
+            f"correlated with `{target}`. If computed from the target, scores will look "
+            "unrealistically good: remove such columns or train on the Original/Cleaned version.",
+            icon=":material/warning:",
         )
     run = st.button(
         "Train models", type="primary", icon=":material/model_training:", disabled=not chosen

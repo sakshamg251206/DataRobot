@@ -5,6 +5,7 @@ import streamlit as st
 from autods.core.features import Encoding, FeatureOptions, Scaling, engineer_features
 from autods.ui import state
 from autods.ui.components import (
+    READABLE,
     csv_download,
     dataset_picker,
     page_header,
@@ -20,7 +21,7 @@ page_header(
 )
 require_data()
 
-source_name, df = dataset_picker("features_version", label="Start from", default=state.CLEANED)
+source_name, df = dataset_picker("features_version", label="Start from", prefer=READABLE)
 if source_name == state.ENGINEERED:
     st.caption(
         "Engineering on top of already engineered data — usually you want Original or Cleaned."
@@ -50,10 +51,14 @@ with st.container(border=True):
             "Add polynomial features",
             help="Squares and pairwise products of the 4 most variable numeric columns.",
         )
+        target_options = ["(none)", *df.columns]
+        known = state.default_target(list(df.columns)) if state.has_known_target() else None
         target = st.selectbox(
             "Keep this column unchanged (target)",
-            ["(none)", *df.columns],
-            help="The target is excluded from encoding, scaling and feature generation.",
+            target_options,
+            index=target_options.index(known) if known else 0,
+            help="The target is excluded from encoding, scaling and feature generation, so new "
+            "features can never contain the answer you want to predict.",
         )
     run = st.button("Apply", type="primary", icon=":material/tune:")
 

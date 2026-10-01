@@ -6,7 +6,7 @@ import streamlit as st
 
 from autods.core.reporting import ReportContext, build_html_report, build_pdf_report
 from autods.ui import state
-from autods.ui.components import dataset_picker, page_header, require_data
+from autods.ui.components import READABLE, dataset_picker, page_header, require_data
 
 page_header(
     "Report",
@@ -16,7 +16,7 @@ page_header(
 )
 require_data()
 
-version_name, df = dataset_picker("report_version")
+version_name, df = dataset_picker("report_version", prefer=READABLE)
 version = state.get_version(version_name)
 original = state.get_version(state.ORIGINAL)
 assert version is not None and original is not None

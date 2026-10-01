@@ -44,6 +44,7 @@ def _state() -> Any:
     ss.setdefault("dataset_name", None)
     ss.setdefault("load_warnings", [])
     ss.setdefault("renamed_columns", {})
+    ss.setdefault("suggested_target", None)
     ss.setdefault("training", None)
     ss.setdefault("training_source", None)
     ss.setdefault("chat", [])
@@ -91,6 +92,7 @@ def load_sample_dataset(key: str) -> None:
 
     df = load_sample(key)
     set_original(df, SAMPLES[key].title, find_quality_issues(df))
+    _state().suggested_target = SAMPLES[key].suggested_target
 
 
 def set_original(
@@ -130,12 +132,35 @@ def reset() -> None:
     ss.dataset_name = None
     ss.load_warnings = []
     ss.renamed_columns = {}
+    ss.suggested_target = None
     ss.training = None
     ss.training_source = None
     ss.training_cache = {}
     ss.chat = []
     ss.ai_cache = {}
     ss.page_cache = {}
+
+
+def has_known_target() -> bool:
+    """Whether the user (or a sample) has indicated what they want to predict."""
+    ss = _state()
+    return bool(ss.training or ss.suggested_target or any(v.target for v in versions().values()))
+
+
+def default_target(columns: list[str]) -> str:
+    """Best guess for the column to predict, consistent across pages.
+
+    Order: the target of the most recent training run, a target chosen on any
+    preparation page, the sample's suggested target, the original's last column.
+    """
+    ss = _state()
+    candidates: list[str | None] = [ss.training.target if ss.training else None]
+    candidates += [v.target for v in reversed(list(versions().values()))]
+    candidates.append(ss.suggested_target)
+    original = ss.versions.get(ORIGINAL)
+    if original is not None and len(original.df.columns):
+        candidates.append(str(original.df.columns[-1]))
+    return next((c for c in candidates if c and c in columns), columns[-1])
 
 
 # ── Modelling ──────────────────────────────────────────────────────────────────

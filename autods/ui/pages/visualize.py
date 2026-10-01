@@ -7,7 +7,7 @@ from autods.ai.prompts import column_insight_prompt, correlation_prompt, relatio
 from autods.core.dtypes import boolean_columns, categorical_columns, numeric_columns, skewness
 from autods.core.profiling import top_correlations
 from autods.ui import charts
-from autods.ui.components import ai_insight, dataset_picker, page_header, require_data
+from autods.ui.components import READABLE, ai_insight, dataset_picker, page_header, require_data
 
 page_header(
     "Visualize",
@@ -17,7 +17,7 @@ page_header(
 )
 require_data()
 
-_, df = dataset_picker("viz_version")
+_, df = dataset_picker("viz_version", prefer=READABLE)
 nums = numeric_columns(df)
 groups = [c for c in categorical_columns(df) + boolean_columns(df) if df[c].nunique() <= 30]
 

@@ -10,6 +10,7 @@ columns the user uploaded, not a pre-encoded matrix.
 from __future__ import annotations
 
 import io
+import re
 import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -161,7 +162,9 @@ def plan_features(df: pd.DataFrame, target: str) -> FeaturePlan:
             continue
         s = df[col]
         kind = classify_column(s)
-        if kind is ColumnKind.EMPTY:
+        if _derived_from(col, target):
+            plan.excluded[col] = "derived from the target (would leak the answer)"
+        elif kind is ColumnKind.EMPTY:
             plan.excluded[col] = "empty"
         elif kind is ColumnKind.ID:
             plan.excluded[col] = "looks like an identifier"
@@ -183,6 +186,33 @@ def plan_features(df: pd.DataFrame, target: str) -> FeaturePlan:
         else:
             plan.excluded[col] = f"unsupported type ({s.dtype})"
     return plan
+
+
+def _derived_from(column: str, target: str) -> bool:
+    """True for engineered columns built from the target.
+
+    Matches the names produced by :mod:`autods.core.features`: products
+    (``a_x_b``), ratios (``a_per_b``) and squares (``a_squared``).
+    """
+    if column == target:
+        return False
+    parts = re.split(r"_x_|_per_", column)
+    return any(part.removesuffix("_squared") == target for part in parts)
+
+
+def leakage_suspects(df: pd.DataFrame, target: str, threshold: float = 0.98) -> list[str]:
+    """Numeric features almost perfectly correlated with a numeric target.
+
+    These are usually the target in disguise (e.g. a column computed from it)
+    and make test scores look far better than real-world performance.
+    """
+    if target not in numeric_columns(df):
+        return []
+    candidates = [c for c in numeric_columns(df) if c != target and df[c].nunique() > 2]
+    if not candidates:
+        return []
+    corr = df[candidates].corrwith(df[target]).abs()
+    return corr[corr >= threshold].sort_values(ascending=False).index.tolist()
 
 
 def build_preprocessor(plan: FeaturePlan) -> ColumnTransformer:

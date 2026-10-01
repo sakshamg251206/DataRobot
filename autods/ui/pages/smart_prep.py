@@ -21,7 +21,7 @@ existing = state.get_version(state.SMART)
 
 with st.container(border=True):
     columns = list(df.columns)
-    default_target = existing.target if existing and existing.target in columns else columns[-1]
+    default_target = state.default_target(columns)
     target = st.selectbox(
         "What do you want to predict? (target column)",
         columns,

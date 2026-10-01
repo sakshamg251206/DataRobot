@@ -12,6 +12,7 @@ from autods.core.modeling import (
     detect_task_type,
     export_model,
     feature_importance,
+    leakage_suspects,
     learning_curve_data,
     plan_features,
     predict_with_bundle,
@@ -126,3 +127,17 @@ def test_friendly_errors(frame, target, message):
 def test_regression_requires_numeric_target(classification_df):
     with pytest.raises(ModelingError, match="numeric target"):
         train_models(classification_df, "label", task=TaskType.REGRESSION)
+
+
+def test_target_derived_features_are_excluded(regression_df):
+    df = regression_df.assign(y_squared=regression_df["y"] ** 2, x1_per_y=regression_df["x1"] / 7)
+    df["x1_x_y"] = df["x1"] * df["y"]
+    plan = plan_features(df, "y")
+    assert {"y_squared", "x1_per_y", "x1_x_y"} <= set(plan.excluded)
+    assert "x1" in plan.numeric
+
+
+def test_leakage_suspects_flags_disguised_target(regression_df):
+    df = regression_df.assign(total=regression_df["y"] * 3 + 1)
+    assert leakage_suspects(df, "total") == ["y"]
+    assert leakage_suspects(regression_df, "group") == []

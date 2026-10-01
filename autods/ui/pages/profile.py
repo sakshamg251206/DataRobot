@@ -14,7 +14,7 @@ from autods.core.profiling import (
     skewed_columns,
 )
 from autods.ui import charts
-from autods.ui.components import column_list, dataset_picker, page_header, require_data
+from autods.ui.components import READABLE, column_list, dataset_picker, page_header, require_data
 
 page_header(
     "Profile",
@@ -24,7 +24,7 @@ page_header(
 )
 require_data()
 
-_, df = dataset_picker("profile_version")
+_, df = dataset_picker("profile_version", prefer=READABLE)
 
 
 @st.cache_data(show_spinner="Profiling columns…", max_entries=8)
