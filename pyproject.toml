@@ -51,7 +51,6 @@ ignore = [
 known-first-party = ["autods"]
 
 [tool.mypy]
-python_version = "3.10"
 packages = ["autods"]
 ignore_missing_imports = true
 warn_unused_ignores = true
