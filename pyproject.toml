@@ -8,7 +8,6 @@ version = "2.0.0"
 description = "Auto Data Science: upload a dataset and go from raw data to an explained, exportable model in one guided app."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
 authors = [{ name = "Saksham Garg" }]
 dependencies = [
     "streamlit>=1.45,<2",
@@ -64,6 +63,7 @@ addopts = "-q"
 filterwarnings = [
     "ignore::DeprecationWarning",
     "ignore::FutureWarning",
+    "ignore::PendingDeprecationWarning",
 ]
 
 [tool.coverage.run]
