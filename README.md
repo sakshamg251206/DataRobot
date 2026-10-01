@@ -8,6 +8,7 @@
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.12-3776AB?logo=python&logoColor=white)
 ![Streamlit](https://img.shields.io/badge/built%20with-Streamlit-FF4B4B?logo=streamlit&logoColor=white)
 ![scikit-learn](https://img.shields.io/badge/ML-scikit--learn-F7931E?logo=scikitlearn&logoColor=white)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 <img src="docs/screenshots/home.png" alt="Home page" width="900">
 
@@ -213,6 +214,7 @@ flowchart TB
 ├── .streamlit/config.toml    # theme and server settings
 ├── .github/workflows/ci.yml  # lint, type-check, test, Docker build
 ├── Dockerfile
+├── LICENSE                   # MIT
 ├── Makefile
 ├── pyproject.toml            # dependencies and tool configuration
 ├── requirements.txt          # deploy-time install (points at pyproject)
@@ -352,3 +354,7 @@ The image runs as a non-root user and exposes a health check at `/_stcore/health
 
 Issues and pull requests are welcome. Please run `make check` before opening a PR. New data logic
 belongs in `autods/core` with tests, and UI code in `autods/ui`.
+
+## License
+
+Released under the [MIT License](LICENSE).
