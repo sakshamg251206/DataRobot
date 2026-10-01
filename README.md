@@ -339,7 +339,8 @@ The image runs as a non-root user and exposes a health check at `/_stcore/health
   rows, but if you train *on* an already-imputed version, those values were computed with the test
   rows included. Train on *Original* or *Cleaned* for the strictest evaluation.
 - **Heuristics can misjudge columns**, for example a numeric code read as a number or an ID read as a
-  category. The app shows what it decided so you can override it (for instance by choosing the
+  category. Dates are parsed with one format per column (day-first is detected when a day above 12
+  appears), but a day-first column whose days are all ≤ 12 is genuinely ambiguous and is read month-first. The app shows what it decided so you can override it (for instance by choosing the
   problem type manually).
 - **ARIMA orders are chosen manually** (with a suggested *d*). Automatic order selection and models
   with external regressors are possible extensions.
