@@ -143,6 +143,7 @@ if state.training_source() != source_name or result.target != target:
 
 # ── Results ────────────────────────────────────────────────────────────────────
 metric = result.primary_metric
+ranked_models = result.leaderboard["Model"].tolist()  # best first, so selectors default to it
 best = result.leaderboard.iloc[0]
 st.divider()
 st.subheader(f"Best model: {result.best_model}", anchor=False)
@@ -181,7 +182,7 @@ with board_tab:
     )
 
 with diag_tab:
-    model_name = st.selectbox("Model", list(result.pipelines), key="diag_model")
+    model_name = st.selectbox("Model", ranked_models, key="diag_model")
     if result.task is TaskType.CLASSIFICATION:
         st.markdown("**Confusion matrix**: rows are the true class, columns the predicted class")
         st.plotly_chart(charts.confusion_heatmap(confusion(result, model_name)))
@@ -207,7 +208,7 @@ with diag_tab:
             st.info(str(exc))
 
 with why_tab:
-    model_name = st.selectbox("Model", list(result.pipelines), key="why_model")
+    model_name = st.selectbox("Model", ranked_models, key="why_model")
     importance = feature_importance(result.pipelines[model_name])
     if importance.empty:
         st.info("This model type does not expose feature importance.")
@@ -256,14 +257,16 @@ with why_tab:
         prediction = result.predictions[model_name][row]
         if result.class_labels:
             prediction = result.class_labels[int(prediction)]
-        subject = (
-            f"probability of **{explanation.class_label}**"
-            if explanation.class_label
-            else "prediction"
-        )
+        if explanation.class_label:
+            direction = f"toward **{explanation.class_label}**"
+            units = "log-odds" if model_name == "XGBoost" else "probability"
+        else:
+            direction = "up"
+            units = f"units of {result.target}"
         st.caption(
-            f"Predicted: **{prediction}**. Green bars pushed the {subject} up, red bars pushed it "
-            f"down, starting from the model's average output of {explanation.base_value:.3g}."
+            f"Predicted: **{prediction}**. Green bars pushed this prediction {direction}, red "
+            f"bars pushed it the other way. Bar length is the size of the push in {units}, "
+            f"starting from the model's average output of {explanation.base_value:.3g}."
         )
         left, right = st.columns(2, gap="large")
         left.plotly_chart(charts.contribution_bar(contrib), key="shap_local")
@@ -271,7 +274,7 @@ with why_tab:
         right.caption(f"Overall influence across {len(explanation.data)} test rows.")
 
 with export_tab:
-    model_name = st.selectbox("Model to export", list(result.pipelines), key="export_model")
+    model_name = st.selectbox("Model to export", ranked_models, key="export_model")
     st.download_button(
         f"Download {model_name} (.joblib)",
         data=cached(f"export:{model_name}", partial(export_model, trained_result, model_name)),
