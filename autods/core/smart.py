@@ -23,7 +23,7 @@ from autods.core.cleaning import (
     parse_datetime_columns,
     remove_duplicates,
 )
-from autods.core.dtypes import categorical_columns, numeric_columns
+from autods.core.dtypes import categorical_columns, numeric_columns, skewness
 from autods.core.features import encode_booleans, extract_datetime_features
 from autods.core.modeling import plan_features
 
@@ -72,7 +72,7 @@ def skew_aware_impute(df: pd.DataFrame, target: str, log: list[str]) -> pd.DataF
         values = out[col]
         if not values.isna().any() or values.dropna().empty:
             continue
-        skew = values.skew() if values.nunique() > 2 else 0.0
+        skew = skewness(values)
         if abs(skew) > 1:
             out[col] = values.fillna(values.median())
             median_cols.append(col)

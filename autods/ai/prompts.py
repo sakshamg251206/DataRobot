@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from autods.core.dtypes import categorical_columns, numeric_columns
+from autods.core.dtypes import categorical_columns, numeric_columns, skewness
 
 ANALYST_SYSTEM = (
     "You are a careful senior data analyst. Explain findings in plain language a "
@@ -49,7 +49,7 @@ def column_insight_prompt(df: pd.DataFrame, column: str) -> str:
     s = df[column]
     if pd.api.types.is_numeric_dtype(s):
         values = s.dropna()
-        skew = float(values.skew()) if values.nunique() > 2 else 0.0  # type: ignore[arg-type]
+        skew = skewness(values)
         stats = values.describe().round(4).to_string()
         detail = f"Numeric column '{column}'.\n{stats}\nSkewness: {skew:.3f}"
     else:

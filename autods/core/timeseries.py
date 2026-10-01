@@ -61,7 +61,9 @@ def build_series(
         raise TimeSeriesError(f"No rows have both a valid date and a `{value_col}` value.")
 
     resampled = frame.set_index("date")["value"].sort_index().resample(freq)
-    series = resampled.sum(min_count=0) if agg == "sum" else resampled.agg(agg)
+    series: pd.Series = pd.Series(
+        resampled.sum(min_count=0) if agg == "sum" else resampled.agg(agg)
+    )
     gaps = int(series.isna().sum())
     if gaps:
         series = series.interpolate(method="time").ffill().bfill()

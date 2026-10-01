@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
+from dotenv import load_dotenv
 
 from autods import APP_NAME, __version__
 from autods.ui import state
@@ -60,6 +61,7 @@ def _sidebar() -> None:
 
 
 def run() -> None:
+    load_dotenv()  # optional local .env; real environment variables take precedence
     st.set_page_config(
         page_title=APP_NAME,
         page_icon=str(ASSETS / "icon.svg"),

@@ -11,6 +11,7 @@ import warnings
 from collections.abc import Iterable
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 TEXT_DTYPES: list[Any] = ["object", "string", "category"]
@@ -89,3 +90,11 @@ def looks_like_datetime(series: pd.Series, threshold: float = 0.8, sample_size: 
     ):
         return False
     return bool(to_datetime(sample).notna().mean() >= threshold)
+
+
+def skewness(series: pd.Series) -> float:
+    """Sample skewness of the non-null values; 0.0 when it is undefined (< 3 distinct values)."""
+    values = series.dropna()
+    if values.nunique() < 3:
+        return 0.0
+    return float(np.asarray(values.skew(), dtype=float))

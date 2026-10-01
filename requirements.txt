@@ -1,15 +1,4 @@
-streamlit
-pandas
-numpy
-scikit-learn
-matplotlib
-seaborn
-plotly
-langchain
-langchain-experimental
-langchain-google-genai
-tabulate
-xgboost
-shap
-statsmodels
-fpdf2
+# Runtime dependencies for deployment (Streamlit Community Cloud, Docker).
+# The single source of truth is pyproject.toml; this installs the project
+# with its optional machine-learning extras (XGBoost and SHAP).
+.[ml]

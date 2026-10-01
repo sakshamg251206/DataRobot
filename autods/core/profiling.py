@@ -7,7 +7,13 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 
-from autods.core.dtypes import categorical_columns, is_text, looks_like_datetime, numeric_columns
+from autods.core.dtypes import (
+    categorical_columns,
+    is_text,
+    looks_like_datetime,
+    numeric_columns,
+    skewness,
+)
 
 ID_UNIQUE_RATIO = 0.95  # unique ratio above this -> probably an identifier
 LOW_CARDINALITY = 10  # this many distinct values or fewer -> categorical-like
@@ -67,7 +73,7 @@ def _safe_skew(series: pd.Series) -> float | None:
     values = series.dropna()
     if len(values) < 3 or values.nunique() < 2:
         return None
-    return float(values.skew())  # type: ignore[arg-type]
+    return skewness(values)
 
 
 def column_profile(df: pd.DataFrame) -> pd.DataFrame:
@@ -199,7 +205,7 @@ def top_correlations(
         return pd.DataFrame(columns=["Feature A", "Feature B", "Correlation"])
     corr = df[cols].corr()
     mask = np.triu(np.ones(corr.shape, dtype=bool), k=1)
-    pairs = corr.where(mask).stack().dropna()
+    pairs: pd.Series = pd.Series(corr.where(mask).stack()).dropna()
     if pairs.empty:
         return pd.DataFrame(columns=["Feature A", "Feature B", "Correlation"])
     pairs = pairs.reindex(pairs.abs().sort_values(ascending=False).index).head(n)

@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from autods.ai.prompts import column_insight_prompt, correlation_prompt, relationship_prompt
-from autods.core.dtypes import boolean_columns, categorical_columns, numeric_columns
+from autods.core.dtypes import boolean_columns, categorical_columns, numeric_columns, skewness
 from autods.core.profiling import top_correlations
 from autods.ui import charts
 from autods.ui.components import ai_insight, dataset_picker, page_header, require_data
@@ -49,7 +49,7 @@ with dist_tab:
             c1.metric("Mean", f"{values.mean():,.4g}")
             c2.metric("Median", f"{values.median():,.4g}")
             c3.metric("Std dev", f"{values.std():,.4g}")
-            skew = float(values.skew()) if values.nunique() > 2 else 0.0  # type: ignore[arg-type]
+            skew = skewness(values)
             c4.metric(
                 "Skewness",
                 f"{skew:.2f}",
